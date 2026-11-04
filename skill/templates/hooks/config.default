@@ -1,0 +1,9 @@
+# Scaffold hook settings, sourced by .scaffold/hooks/lib.sh.
+SCAFFOLD_MODE=local
+BASE_BRANCH=main
+REMOTE=origin
+# claude.ai artifact URL of the status board; empty = no board.
+BOARD_URL=
+# Extra artifact pushes, one EXTRA_PUSH line each: url|collection|doc_id|absolute-file
+# EXTRA_PUSH=https://claude.ai/artifact/ID|board|current|/abs/path/dashboard.json
+# This file is parsed as data (KEY=value), never sourced.
