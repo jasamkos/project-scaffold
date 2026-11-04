@@ -1,0 +1,59 @@
+<title>{{PROJECT}} Status</title>
+<style>
+:root { --bg: #f6f7f9; --surface: #fff; --line: #dde1e8; --fg: #1c2230; --muted: #5e6678; --accent: #2f55c9; --ok: #237a4b; --warn: #a86400; color-scheme: light; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #13161d; --surface: #1b1f29; --line: #303646; --fg: #e6e9f0; --muted: #9aa2b5; --accent: #7f9cff; --ok: #5fcf8e; --warn: #f0b04a; color-scheme: dark; } }
+:root[data-theme="dark"] { --bg: #13161d; --surface: #1b1f29; --line: #303646; --fg: #e6e9f0; --muted: #9aa2b5; --accent: #7f9cff; --ok: #5fcf8e; --warn: #f0b04a; color-scheme: dark; }
+* { box-sizing: border-box }
+body { margin: 0; padding: 20px 16px 48px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, sans-serif; }
+main { max-width: 960px; margin: 0 auto; display: grid; gap: 18px }
+h1 { font-size: 22px; margin: 0 } h2 { font-size: 15px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em }
+.meta { color: var(--muted); font-size: 13px }
+section { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px }
+ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px }
+li { display: grid; gap: 2px; min-width: 0; border-top: 1px solid var(--line); padding-top: 10px }
+li:first-child { border-top: 0; padding-top: 0 }
+.task { font-weight: 600; overflow-wrap: anywhere } .sub { color: var(--muted); font-size: 13px; overflow-wrap: anywhere }
+.done .task::before { content: "✓ "; color: var(--ok) } .unclaimed .task::before { content: "• "; color: var(--warn) }
+.empty { color: var(--muted) }
+</style>
+<main>
+  <header><h1>{{PROJECT}} status</h1><div class="meta" id="meta">Loading…</div></header>
+  <section><h2>Now</h2><ul id="now"></ul></section>
+  <section><h2>Last round</h2><ul id="last" class="done"></ul></section>
+  <section id="unclaimedBox" hidden><h2>Merged without a work note</h2><ul id="unclaimed" class="unclaimed"></ul></section>
+</main>
+<script>
+// Note text is untrusted (anyone with repo access writes it): build nodes with textContent only, coerce every field.
+const S = (x, d = "") => String(x ?? d);
+const meta = msg => { document.getElementById("meta").textContent = msg; };
+function item(title, sub) {
+  const li = document.createElement("li");
+  const t = document.createElement("div"); t.className = "task"; t.textContent = S(title);
+  const s = document.createElement("div"); s.className = "sub"; s.textContent = S(sub);
+  li.append(t, s); return li;
+}
+function fill(id, rows, toItem, emptyText) {
+  const ul = document.getElementById(id); ul.replaceChildren();
+  if (!Array.isArray(rows) || !rows.length) { const li = document.createElement("li"); li.className = "empty"; li.textContent = emptyText; ul.append(li); return; }
+  rows.forEach(r => ul.append(toItem(r ?? {})));
+}
+function render(b) {
+  if (!b || typeof b !== "object") { meta("No board data yet: the next Claude session in this repo pushes it."); return; }
+  meta(`Updated ${S(b.generated_at, "?")} · ${S(b.base?.branch, "?")} @ ${S(b.base?.commit, "?")}`);
+  fill("now", b.now, n => item(n.task, `${S(n.status, "-")} · waiting: ${S(n.waiting_on, "-")} · next: ${S(n.next, "-")} · ${S(n.branch)}`), "No work in progress.");
+  fill("last", b.last_round, n => item(n.task, `#${S(n.pr)} merged ${S(n.merged_at)} · ${S(n.status)}`), "Nothing merged yet.");
+  const un = Array.isArray(b.unclaimed) ? b.unclaimed : [];
+  document.getElementById("unclaimedBox").hidden = !un.length;
+  fill("unclaimed", un, u => item(`#${S(u.number)} ${S(u.title)}`, `${S(u.merged_at)} · ${S(u.author)}`), "");
+}
+(async () => {
+  try {
+    const sample = new URLSearchParams(location.search).get("sample");
+    if (sample) { render(await (await fetch(sample)).json()); return; }
+    const db = typeof claude === "undefined" ? null : await claude.use("db");
+    if (!db) { meta("Sign in to see this board."); return; }
+    db.doc("board/current").onSnapshot(s => { try { render(s.exists ? s.data() : null); } catch { meta("Could not render board data."); } },
+      () => meta("Could not load board data."));
+  } catch { meta("Could not load board data."); }
+})();
+</script>

@@ -1,0 +1,4 @@
+{"base": {"branch": "main", "commit": "abc1234"}, "generated_at": "2026-11-04T12:00:00+0200",
+ "now": [{"task": "gate", "path": ".scaffold/work/active/gate.md", "status": "<img src=x onerror=alert(1)> building", "branch": "feat/gate", "waiting_on": "review", "next": "merge", "branches": ["feat/gate"]}],
+ "last_round": [{"task": "lib", "path": ".scaffold/work/completed/lib.md", "status": "shipped", "branch": "feat/lib", "waiting_on": "", "next": "", "branches": ["feat/lib"], "pr": 12, "merged_at": "2026-11-03"}],
+ "unclaimed": [{"number": 13, "title": "bump deps", "branch": "deps/x", "merged_at": "2026-11-03", "author": "bot"}]}
