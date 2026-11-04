@@ -6,8 +6,9 @@ cmd=$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null) || exit 0
 cmd=${cmd//$'\t'/ }; cmd=${cmd//$'\n'/;}  # lines and tabs are plain separators
 # Runs before every Bash call: nothing above may spawn git.
 q="'"; arg="(\"[^\"]*\"|${q}[^$q]*$q|[^ ]+)"
-push_re="(^|[;&|( ])git( -[cC] $arg)* push( |\$)"
-[[ $cmd =~ $push_re || $cmd == *"gh pr create"* ]] || exit 0
+push_re="(^|[;&|( ])git( -[cC] $arg)* push([ ;&|)]|\$)"
+pr_re="(^|[;&|( ])gh pr create([ ;&|)]|\$)"
+[[ $cmd =~ $push_re || $cmd =~ $pr_re ]] || exit 0
 [ "${SCAFFOLD_SKIP:-}" = 1 ] && exit 0
 grep -qE '(^|[;&| ])SCAFFOLD_SKIP=1 ' <<<"$cmd" && exit 0
 # shellcheck source=lib.sh
@@ -46,7 +47,7 @@ else
   [ -n "$note" ] || deny "$nonote"
   headers_complete "$note" || deny "$(safe_text <<<"${note#"$root"/}") header is incomplete: fill status:, branch:, waiting-on:, next:, then retry."
   # Notes are untracked here: freshness is judged per command kind against the last allowed run.
-  kinds=""; [[ $cmd =~ $push_re ]] && kinds=push; [[ $cmd == *"gh pr create"* ]] && kinds="$kinds pr"
+  kinds=""; [[ $cmd =~ $push_re ]] && kinds=push; [[ $cmd =~ $pr_re ]] && kinds="$kinds pr"
   s=$(tr / _ <<<"$branch")
   for k in $kinds; do
     [ "$note" -nt "$STATE/$k-$s" ] || deny "$(safe_text <<<"${note#"$root"/}") not updated since the last $k of $b. Update status:/waiting-on:/next:, then retry."

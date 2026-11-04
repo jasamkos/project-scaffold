@@ -241,6 +241,18 @@ t_gate_multiline_and_tab() {
   deny_has "$(gate $'set -e\ngit push')" "no work note lists branch feat/a"
   deny_has "$(gate $'git\tpush')" "no work note lists branch feat/a"
 }
+t_gate_terminators() {
+  T=gate_terminators; mkrepo local; git -C "$R" switch -qc feat/a
+  deny_has "$(gate $'git add .\ngit push\necho done')" "no work note lists branch feat/a"
+  deny_has "$(gate 'git push;echo x')" "no work note lists branch feat/a"
+  deny_has "$(gate 'git push&&echo x')" "no work note lists branch feat/a"
+  deny_has "$(gate 'git push|cat')" "no work note lists branch feat/a"
+  deny_has "$(gate '(git push)')" "no work note lists branch feat/a"
+  deny_has "$(gate 'echo a && gh pr create --fill;echo b')" "no work note lists branch feat/a"
+  eq "$(gate 'git pushx')" ""
+  eq "$(gate 'git push-mirror-tool')" ""
+  eq "$(gate 'echo gh pr created')" ""
+}
 t_gate_shared_missing_base_ref() {
   T=gate_shared_missing_base_ref; mkrepo shared; git -C "$R" switch -qc feat/a; note a feat/a; commit_note a
   git -C "$R" update-ref -d refs/remotes/origin/main
