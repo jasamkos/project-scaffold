@@ -78,13 +78,16 @@ committed_note_for_branch() {
 }
 
 # Repo a gated command acts on: `git -C <dir> … push` or a leading `cd <dir> &&` (dir bare, "…" or '…'), else the hook cwd ($2).
+# Lowercase `-c k=v` options are skipped, never taken as a dir.
 target_dir() {
   local d="" q="'"
   local dir_re="(\"[^\"]+\"|${q}[^$q]+$q|[^ ;&]+)"
-  if [[ $1 =~ git\ -[cC]\ $dir_re\ .*push ]]; then d=${BASH_REMATCH[1]}
-  elif [[ $1 =~ ^[[:space:]]*cd\ ${dir_re}[[:space:]]*\&\& ]]; then d=${BASH_REMATCH[1]}; fi
+  if [[ $1 =~ git\ (-c\ [^\ ]+\ )*-C\ ${dir_re}\ .*push ]]; then d=${BASH_REMATCH[2]}
+  elif [[ $1 =~ (^|;)[[:space:]]*cd\ ${dir_re}[[:space:]]*\&\& ]]; then d=${BASH_REMATCH[2]}; fi
   case $d in \"*\" | "$q"*"$q") d=${d#?}; d=${d%?} ;; esac
-  case $d in "") echo "$2" ;; /*) echo "$d" ;; *) echo "$2/$d" ;; esac
+  case $d in "") echo "$2"; return 0 ;; /*) ;; *) d=$2/$d ;; esac
+  # Unresolvable targets (~, $VAR, typos) fall back to the hook cwd rather than failing open.
+  if [ -d "$d" ]; then echo "$d"; else echo "$2"; fi
 }
 
 headers_complete() {

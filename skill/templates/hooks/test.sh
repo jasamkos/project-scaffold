@@ -156,14 +156,18 @@ t_gate_no_note() {
 }
 t_lib_target_dir() {
   T=lib_target_dir; mkrepo local; . "$R/.scaffold/hooks/lib.sh"
-  eq "$(target_dir 'git -C /x/y push' /c)" "/x/y"
-  eq "$(target_dir 'git -C "/x/y z" push' /c)" "/x/y z"
-  eq "$(target_dir "git -C '/x/y z' push" /c)" "/x/y z"
-  eq "$(target_dir 'cd /x/y && git push' /c)" "/x/y"
-  eq "$(target_dir 'cd "/x/y z" && git push' /c)" "/x/y z"
-  eq "$(target_dir "cd '/x/y z' && git push" /c)" "/x/y z"
-  eq "$(target_dir 'git -C rel push' /c)" "/c/rel"
+  mkdir -p "$BASE/x/y" "$BASE/x/y z" "$BASE/c/rel"; X=$BASE/x
+  eq "$(target_dir "git -C $X/y push" /c)" "$X/y"
+  eq "$(target_dir "git -C \"$X/y z\" push" /c)" "$X/y z"
+  eq "$(target_dir "git -C '$X/y z' push" /c)" "$X/y z"
+  eq "$(target_dir "cd $X/y && git push" /c)" "$X/y"
+  eq "$(target_dir "cd \"$X/y z\" && git push" /c)" "$X/y z"
+  eq "$(target_dir "cd '$X/y z' && git push" /c)" "$X/y z"
+  eq "$(target_dir 'git -C rel push' "$BASE/c")" "$BASE/c/rel"
   eq "$(target_dir 'git push' /c)" "/c"
+  eq "$(target_dir "git -c k=v -C $X/y push" /c)" "$X/y"
+  eq "$(target_dir 'git -c k=v push' /c)" "/c"
+  eq "$(target_dir 'cd ~/nonexistent-xyz && git push' /c)" "/c"
 }
 t_gate_targets_command_repo() {
   T=gate_targets_command_repo; mkrepo local
@@ -222,6 +226,20 @@ t_gate_shared_note_from_main() {
   T=gate_shared_note_from_main; mkrepo shared; note a feat/a; commit_note a; git -C "$R" push -q origin main
   git -C "$R" switch -qc feat/a; echo code >"$R/code"; git -C "$R" add code; git -C "$R" commit -qm code
   deny_has "$(gate 'git push')" "not changed on this branch"
+}
+t_gate_shared_from_subdir() {
+  T=gate_shared_from_subdir; mkrepo shared; git -C "$R" switch -qc feat/a; note a feat/a; commit_note a; mkdir "$R/sub"
+  eq "$(PATH="$FAKEBIN:$PATH" "$R/.scaffold/hooks/gate" <<<"$(hookjson 'git push' | jq -c --arg d "$R/sub" '.cwd = $d')")" ""
+}
+t_gate_lowercase_c_option() {
+  T=gate_lowercase_c_option; mkrepo local; git -C "$R" switch -qc feat/a
+  deny_has "$(gate 'git -c core.sshCommand=ssh push')" "no work note lists branch feat/a"
+  deny_has "$(gate 'cd ~/nonexistent-xyz && git push')" "no work note lists branch feat/a"
+}
+t_gate_multiline_and_tab() {
+  T=gate_multiline_and_tab; mkrepo local; git -C "$R" switch -qc feat/a
+  deny_has "$(gate $'set -e\ngit push')" "no work note lists branch feat/a"
+  deny_has "$(gate $'git\tpush')" "no work note lists branch feat/a"
 }
 t_gate_shared_missing_base_ref() {
   T=gate_shared_missing_base_ref; mkrepo shared; git -C "$R" switch -qc feat/a; note a feat/a; commit_note a

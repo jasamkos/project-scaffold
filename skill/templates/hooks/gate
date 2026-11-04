@@ -3,6 +3,7 @@
 set -uo pipefail
 input=$(cat)
 cmd=$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null) || exit 0
+cmd=${cmd//$'\t'/ }; cmd=${cmd//$'\n'/;}  # lines and tabs are plain separators
 # Runs before every Bash call: nothing above may spawn git.
 q="'"; arg="(\"[^\"]*\"|${q}[^$q]*$q|[^ ]+)"
 push_re="(^|[;&|( ])git( -[cC] $arg)* push( |\$)"
@@ -13,6 +14,7 @@ grep -qE '(^|[;&| ])SCAFFOLD_SKIP=1 ' <<<"$cmd" && exit 0
 . "$(dirname "$0")/lib.sh" 2>/dev/null || exit 0
 dir=$(jq -r '.cwd // empty' <<<"$input"); dir=$(target_dir "$cmd" "${dir:-$PWD}")
 root=$(scaffold_root "$dir") || exit 0
+top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || exit 0  # ls-tree/show/diff pathspecs are cwd-relative
 load_config "$root" || exit 0
 branch=$(git -C "$dir" branch --show-current 2>/dev/null) || exit 0
 if [ -z "$branch" ] || [ "$branch" = "$BASE_BRANCH" ]; then exit 0; fi
@@ -26,7 +28,7 @@ nonote="no work note lists branch $b. Create $SC/work/active/<task>.md whose fir
 
 if [ "$SCAFFOLD_MODE" = shared ]; then
   # The PR carries the committed copy: discover and validate from HEAD, never the working tree.
-  rel=$(committed_note_for_branch "$dir" "$branch")
+  rel=$(committed_note_for_branch "$top" "$branch")
   if [ -z "$rel" ]; then
     wt=$(notes_for_branch "$branch" | head -1)
     [ -n "$wt" ] || deny "$nonote"
@@ -35,9 +37,9 @@ if [ "$SCAFFOLD_MODE" = shared ]; then
   r=$(safe_text <<<"$rel")
   committed=$(mktemp) || exit 0
   trap 'rm -f "$committed"' EXIT
-  git -C "$dir" show "HEAD:$rel" >"$committed" 2>/dev/null || exit 0
+  git -C "$top" show "HEAD:$rel" >"$committed" 2>/dev/null || exit 0
   headers_complete "$committed" || deny "the committed copy of $r has an incomplete header. Commit the fixed header, then retry."
-  changed=$(git -C "$dir" diff --name-only "$REMOTE/$BASE_BRANCH...HEAD" -- "$rel" 2>/dev/null) || exit 0
+  changed=$(git -C "$top" diff --name-only "$REMOTE/$BASE_BRANCH...HEAD" -- "$rel" 2>/dev/null) || exit 0
   [ -n "$changed" ] || deny "$r is not changed on this branch. Update its header for this push, commit it with the change, then retry."
 else
   note=$(notes_for_branch "$branch" | head -1)
