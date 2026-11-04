@@ -474,6 +474,44 @@ t_render_parses_like_bash() {
   eq "$(board '.now[0].status')" "$(header "$f" status)"
 }
 
+catchup() { PATH="$FAKEBIN:$PATH" python3 -I "$R/.scaffold/hooks/catchup.py" "$R"; }
+t_catchup_unclaimed() {
+  T=catchup_unclaimed; mkrepo local; note mine feat/mine
+  echo '[{"number":1,"title":"mine","headRefName":"feat/mine","mergedAt":"2026-11-03T10:00:00Z","author":{"login":"me"}},{"number":2,"title":"theirs","headRefName":"feat/theirs","mergedAt":"2026-11-03T11:00:00Z","author":{"login":"ann"}}]' >"$GHOUT"
+  catchup; catchup
+  eq "$(jq -r '[.[].number] | join(",")' "$R/.scaffold/.hookstate/unclaimed.json")" "2"
+  eq "$(cat "$R/.scaffold/.hookstate/catchup-since")" "$(date +%F)"
+  note theirs-now feat/theirs
+  catchup
+  eq "$(jq -r 'length' "$R/.scaffold/.hookstate/unclaimed.json")" "0"
+  PATH="$FAKEBIN:$PATH" python3 -I "$R/.scaffold/hooks/render.py" "$R" main local
+  lacks "$(cat "$R/.scaffold/STATUS.md")" "Merged without a work note"
+}
+t_catchup_full_page_keeps_cursor() {
+  T=catchup_full_page_keeps_cursor; mkrepo local
+  echo 2026-10-30 >"$R/.scaffold/.hookstate/catchup-since"
+  echo '[{"number":3,"title":"a","headRefName":"x/a","mergedAt":"2026-11-01T10:00:00Z","author":{"login":"a"}},{"number":4,"title":"b","headRefName":"x/b","mergedAt":"2026-11-03T10:00:00Z","author":{"login":"b"}}]' >"$GHOUT"
+  SCAFFOLD_CATCHUP_LIMIT=2 catchup
+  eq "$(cat "$R/.scaffold/.hookstate/catchup-since")" "2026-10-30"
+  eq "$(wc -l <"$BASE/gh.calls" | tr -d ' ')" "10"
+  eq "$(jq -r '[.[].number] | join(",")' "$R/.scaffold/.hookstate/unclaimed.json")" "4,3"
+}
+t_catchup_paginates_by_date_window() {
+  T=catchup_paginates_by_date_window; mkrepo local; note one x/a; note two x/b
+  echo '[{"number":3,"title":"a","headRefName":"x/a","mergedAt":"2026-11-03T10:00:00Z","author":{"login":"a"}},{"number":4,"title":"b","headRefName":"x/b","mergedAt":"2026-11-02T10:00:00Z","author":{"login":"b"}}]' >"$GHOUT.1"
+  echo '[{"number":5,"title":"old","headRefName":"x/old","mergedAt":"2026-11-01T10:00:00Z","author":{"login":"c"}}]' >"$GHOUT.2"
+  SCAFFOLD_CATCHUP_LIMIT=2 catchup
+  eq "$(jq -r '[.[].number] | join(",")' "$R/.scaffold/.hookstate/unclaimed.json")" "5"
+  eq "$(cat "$R/.scaffold/.hookstate/catchup-since")" "$(date +%F)"
+  has "$(sed -n 1p "$BASE/gh.calls")" "..$(date +%F)"
+  has "$(sed -n 2p "$BASE/gh.calls")" "..2026-11-02"
+}
+t_catchup_gh_failure_writes_nothing() {
+  T=catchup_gh_failure_writes_nothing; mkrepo local; rm -f "$GHOUT"
+  catchup; eq "$?" "0"
+  if [ -e "$R/.scaffold/.hookstate/catchup-since" ]; then bad "cursor written on gh failure"; else ok; fi
+}
+
 # --- runner ---
 for T in $(declare -F | awk '{print $3}' | grep '^t_' | grep -- "${1:-}"); do "$T"; done
 echo "pass=$pass fail=$fail"
