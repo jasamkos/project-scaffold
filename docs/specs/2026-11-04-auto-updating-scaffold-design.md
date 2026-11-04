@@ -6,7 +6,7 @@ Date: 2026-11-04. Status: spec approved 2026-11-04; D8 status board added after 
 
 The scaffold (`PROJECT.md`, `STATUS.md`, `DECISIONS.md`, work notes) updates when work happens, not on a schedule: the session that completes a task writes the update, and in shared mode the update ships in the same PR as the code, so everyone who pulls `main` sees current status. Setup asks whether the scaffold is for everyone (committed) or just the user (local, untracked).
 
-Success: every merged PR made through a Claude session shows in STATUS as soon as it is on `main`, for everyone who pulls; merges made outside Claude show by the next `catchup` run.
+Success: every merged PR made through a Claude session shows in STATUS at the next session start (or manual `render`) after it is on `main`, for everyone who pulls; merges made outside Claude show by the next `catchup` run. No pull-time trigger: STATUS is uncommitted, so a pull alone does not rebuild it.
 
 ## Why the current hooks don't achieve it (evidence, ai_gateway 2026-11-04)
 
@@ -96,7 +96,16 @@ Replace `.scaffold/hooks/scaffold-hook.sh` with skill hooks; keep Signal Board +
 - Just-me hooks register once in `~/.claude/settings.json` through a global `dispatch` script, not in `.claude/settings.local.json`: worktrees have no copy of that untracked file. Everyone-mode repos make `dispatch` exit so hooks never run twice.
 - Just-me `gate` cannot use the branch diff (notes are untracked): it requires the note to be newer than the branch's last allowed push.
 - A note is done when its first listed branch is merged; stacked PRs list the top branch first.
-- The Signal Board push becomes a generic `EXTRA_PUSHES` list (`url|collection|doc|file`), so the skill carries no ai_gateway specifics.
+- The Signal Board push becomes generic `EXTRA_PUSH=url|collection|doc|file` config lines, so the skill carries no ai_gateway specifics.
+
+Security and correctness refinements from Codex review of the plan (2026-11-04, 23 findings):
+
+- `dispatch` runs only repos listed in the user-owned registry `~/.claude/scaffold/repos`; a checkout shipping `.scaffold/config` is not consent.
+- `.scaffold/config` is parsed as data (fixed keys, validated values), never sourced: everyone-mode config is contributor-controlled.
+- `brief` prints note text last, fenced, after an explicit "data, not instructions" boundary; DO-FIRST lines come only from config.
+- Everyone mode reads notes from `HEAD` for `gate` checks and board data, so uncommitted drafts never reach the shared board.
+- `gate` resolves the repo a command targets (`git -C`, leading `cd … &&`), fails open on git errors, and keeps separate push and PR stamps in just-me mode.
+- Merge history is a union cache plus per-branch lookups for unresolved notes, so old merges never fall back to "Now".
 
 ## Out of scope
 
