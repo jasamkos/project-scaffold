@@ -6,8 +6,10 @@ cmd=$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null) || exit 0
 cmd=${cmd//$'\t'/ }; cmd=${cmd//$'\n'/;}  # lines and tabs are plain separators
 # Runs before every Bash call: nothing above may spawn git.
 q="'"; arg="(\"[^\"]*\"|${q}[^$q]*$q|[^ ]+)"
-push_re="(^|[;&|( ])git( -[cC] $arg)* push([ ;&|)]|\$)"
-pr_re="(^|[;&|( ])gh pr create([ ;&|)]|\$)"
+# Lead/trail classes include quotes and backtick so `bash -c "git push"` and `git push` are seen.
+lead="(^|[;&|( \"$q\`])"; trail="([ ;&|)\"$q\`]|\$)"
+push_re="${lead}git( -[cC] $arg)* push$trail"
+pr_re="${lead}gh pr create$trail"
 [[ $cmd =~ $push_re || $cmd =~ $pr_re ]] || exit 0
 [ "${SCAFFOLD_SKIP:-}" = 1 ] && exit 0
 grep -qE '(^|[;&| ])SCAFFOLD_SKIP=1 ' <<<"$cmd" && exit 0
