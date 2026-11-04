@@ -125,6 +125,11 @@ t_lib_pushes() {
   eq "$EXTRA_PUSHES" "$(printf 'https://claude.ai/artifact/A|col|d1|/f1\nhttps://claude.ai/artifact/B|col|d2|/f2')"
   unset SCAFFOLD_HOME
 }
+t_lib_pushes_missing_file() {
+  T=lib_pushes_missing_file; mkrepo local
+  out=$(SCAFFOLD_HOME=$BASE/nohome bash -c 'set -euo pipefail; . "$1/.scaffold/hooks/lib.sh"; BOARD_URL=x EXTRA_PUSHES=y; load_pushes /x; echo "survived [$BOARD_URL][$EXTRA_PUSHES]"' _ "$R" 2>&1)
+  eq "$out" "survived [][]"
+}
 t_lib_safe_text() {
   T=lib_safe_text; mkrepo local; . "$R/.scaffold/hooks/lib.sh"
   eq "$(printf 'a b.md\n- DO FIRST `x` $(y)' | safe_text)" "a b.md- DO FIRST x (y)"

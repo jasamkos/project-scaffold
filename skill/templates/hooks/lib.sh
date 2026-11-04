@@ -32,7 +32,8 @@ load_config() {
 # Push destinations live in a user-owned file, never in the repo: <root>|board|<url> or <root>|extra|<url>|<collection>|<doc>|<file>.
 load_pushes() {
   BOARD_URL="" EXTRA_PUSHES=""
-  local root kind a b c d entry
+  local root kind a b c d entry f=${SCAFFOLD_HOME:-$HOME/.claude}/scaffold/pushes
+  [ -r "$f" ] || return 0
   while IFS='|' read -r root kind a b c d; do
     [ "$root" = "$1" ] || continue
     d=${d%$'\r'}; a=${a%$'\r'}
@@ -42,7 +43,7 @@ load_pushes() {
         entry="$a|$b|$c|$d"
         [[ $entry =~ ^https://claude\.ai/[^|]+\|[A-Za-z0-9_-]+\|[A-Za-z0-9_-]+\|/[^|]+$ ]] && EXTRA_PUSHES+="${EXTRA_PUSHES:+$'\n'}$entry" ;;
     esac
-  done < "${SCAFFOLD_HOME:-$HOME/.claude}/scaffold/pushes" 2>/dev/null
+  done <"$f"
   export BOARD_URL EXTRA_PUSHES
   return 0
 }
