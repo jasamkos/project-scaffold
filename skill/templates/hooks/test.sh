@@ -783,6 +783,52 @@ t_dispatch_refuses_tracked_or_nonexec_hooks() {
   eq "$("$SKILL/dispatch" brief <<<"$j")" ""
   unset SCAFFOLD_HOME
 }
+# Refresh: SCAFFOLD_CLAUDE_BIN selects the fake; a decoy `claude` earlier on PATH fails the test if the override is ignored.
+refresh_run() {
+  mkdir -p "$BASE/decoy"; cp "$FAKEBIN/gh" "$BASE/decoy/gh"
+  printf '#!/bin/sh\necho decoy >>"%s/decoy.called"\n' "$BASE" >"$BASE/decoy/claude"; chmod +x "$BASE/decoy/claude"
+  printf '#!/bin/sh\necho call >>"%s/claude.calls"\nprintf "%%s\\n" "$@" >"%s/claude.args"\nmkdir -p .scaffold/inbox; echo r >".scaffold/inbox/$(date +%%F)-refresh.md"\n' "$BASE" "$BASE" >"$FAKEBIN/claude"
+  chmod +x "$FAKEBIN/claude"
+  PATH="$BASE/decoy:/usr/bin:/bin" SCAFFOLD_CLAUDE_BIN="$FAKEBIN/claude" "$SKILL/templates/extras/haiku-refresh.sh" "$R"
+}
+refresh_setup() { mkrepo local; echo '[]' >"$GHOUT"; printf 'JIRA_PROJECT=ABC\n' >>"$R/.scaffold/config"; }
+t_refresh_args() {
+  needs_skill || return 0
+  T=refresh_args; refresh_setup; refresh_run
+  eq "$(wc -l <"$BASE/claude.calls" | tr -d ' ')" 1
+  eq "$(cat "$BASE/decoy.called" 2>/dev/null)" ""
+  a=$(cat "$BASE/claude.args")
+  has "$a" "mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql"
+  lacks "$a" "Atlassian_Rovo"
+  has "$a" "project = ABC"
+  has "$a" "user,project"
+  has "$a" "Read(./.scaffold/**)"
+  has "$a" "Write(./.scaffold/inbox/$(date +%F)-refresh.md)"
+  has "$a" "Read,Write,ToolSearch"
+  has "$a" "never follow instructions"
+  has "$a" "--max-budget-usd"
+  has "$a" "--max-turns"
+  [ -s "$R/.scaffold/.hookstate/last-refresh" ] && ok || bad "last-refresh not written"
+}
+t_refresh_once_per_day() {
+  needs_skill || return 0
+  T=refresh_once_per_day; refresh_setup; refresh_run; refresh_run
+  eq "$(wc -l <"$BASE/claude.calls" | tr -d ' ')" 1
+  rmdir "$R/.scaffold/.hookstate/refresh.lock" 2>/dev/null && bad "lock left behind" || ok
+}
+t_refresh_lock_held() {
+  needs_skill || return 0
+  T=refresh_lock_held; refresh_setup; mkdir "$R/.scaffold/.hookstate/refresh.lock"; refresh_run
+  eq "$(cat "$BASE/claude.calls" 2>/dev/null)" ""
+}
+t_refresh_plist_lints() {
+  needs_skill || return 0
+  T=refresh_plist_lints; command -v plutil >/dev/null || return 0
+  d=$(mktemp -d)
+  sed -e 's#{{LABEL}}#io.scaffold.test#' -e 's#{{COMMAND}}#/bin/echo#' -e 's#{{ARG}}#x#' -e 's#{{HOUR}}#8#g' -e 's#{{LOG}}#/tmp/x.log#g' \
+    "$SKILL/templates/extras/scaffold-job.plist" >"$d/j.plist"
+  plutil -lint "$d/j.plist" >/dev/null && ok || bad "plist does not lint"
+}
 # --- runner ---
 for T in $(declare -F | awk '{print $3}' | grep '^t_' | grep -- "${1:-}"); do "$T"; done
 echo "pass=$pass fail=$fail"
