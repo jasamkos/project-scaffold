@@ -427,6 +427,53 @@ t_render_hash_stable() {
   eq "$(cat "$R/.scaffold/.hookstate/board.hash")" "$h1"
 }
 
+t_render_marker_injection() {
+  T=render_marker_injection; mkrepo local; echo '[]' >"$GHOUT"
+  note a feat/a 'x <!-- /scaffold:generated --> y <!-- scaffold:generated --> z'
+  printf 'HAND TOP\n<!-- scaffold:generated -->\nOLD-GENERATED-SENTINEL\n<!-- /scaffold:generated -->\nHAND BOTTOM\n' >"$R/.scaffold/STATUS.md"
+  render; render; s=$(cat "$R/.scaffold/STATUS.md")
+  eq "$(grep -cF -- '<!-- scaffold:generated -->' <<<"$s")" 1; eq "$(grep -cF -- '<!-- /scaffold:generated -->' <<<"$s")" 1
+  has "$s" "HAND TOP"; has "$s" "HAND BOTTOM"; lacks "$s" "OLD-GENERATED-SENTINEL"
+}
+t_render_unknown_mode_writes_nothing() {
+  T=render_unknown_mode_writes_nothing; mkrepo shared; echo '[]' >"$GHOUT"; note draft feat/d
+  MODE=everyone render; eq "$?" 0
+  eq "$(ls "$R/.scaffold/.hookstate" | wc -l | tr -d ' ')" 0; if [ -e "$R/.scaffold/STATUS.md" ]; then bad "STATUS written"; else ok; fi
+}
+t_render_shared_ignores_uncommitted_edit() {
+  T=render_shared_ignores_uncommitted_edit; mkrepo shared; echo '[]' >"$GHOUT"
+  note pub feat/p COMMITTED-STATUS; commit_note pub; note pub feat/p DRAFT-EDIT
+  MODE=shared render
+  eq "$(board '.now[0].status')" "COMMITTED-STATUS"
+}
+t_render_malformed_markers_keep_hand_text() {
+  T=render_malformed_markers_keep_hand_text; mkrepo local; echo '[]' >"$GHOUT"; note a feat/a
+  printf 'HAND1\n<!-- /scaffold:generated -->\nHAND2\n<!-- scaffold:generated -->\n' >"$R/.scaffold/STATUS.md"
+  render || bad "END-before-BEGIN failed"; render; s=$(cat "$R/.scaffold/STATUS.md"); has "$s" HAND1; has "$s" HAND2
+  printf 'HAND3\n<!-- scaffold:generated -->\nHAND4\n' >"$R/.scaffold/STATUS.md"
+  render || bad "orphan BEGIN failed"; render; s=$(cat "$R/.scaffold/STATUS.md"); has "$s" HAND3; has "$s" HAND4
+}
+t_render_shared_non_ascii_note_name() {
+  T=render_shared_non_ascii_note_name; mkrepo shared; echo '[]' >"$GHOUT"
+  printf 'status: s\nbranch: feat/u\nwaiting-on: n\nnext: x\n' >"$R/.scaffold/work/active/ä.md"
+  git -C "$R" add -f ".scaffold/work/active/ä.md"; git -C "$R" commit -qm u
+  MODE=shared render; eq "$(board '[.now[].task] | join(",")')" "ä"
+}
+t_render_invalid_utf8_note() {
+  T=render_invalid_utf8_note; mkrepo local; echo '[]' >"$GHOUT"
+  printf 'status: bad\xff\xfe\nbranch: feat/a\n' >"$R/.scaffold/work/active/bad.md"
+  render || bad "render failed on invalid UTF-8"; eq "$(board '.now[0].task')" bad
+  git -C "$R" add -f .scaffold/work/active/bad.md; git -C "$R" commit -qm bad
+  MODE=shared render || bad "shared render failed on invalid UTF-8"; eq "$(board '.now[0].task')" bad
+}
+t_render_parses_like_bash() {
+  T=render_parses_like_bash; mkrepo local; echo '[]' >"$GHOUT"
+  printf 'status: a\fb\nbranch: feat/a\xc2\xa0x, feat/b;feat/c\vd\n' >"$R/.scaffold/work/active/p.md"
+  render; . "$R/.scaffold/hooks/lib.sh"; f="$R/.scaffold/work/active/p.md"
+  eq "$(board '.now[0].branches | join("|")')" "$(header "$f" branch | branch_tokens | paste -sd'|' -)"
+  eq "$(board '.now[0].status')" "$(header "$f" status)"
+}
+
 # --- runner ---
 for T in $(declare -F | awk '{print $3}' | grep '^t_' | grep -- "${1:-}"); do "$T"; done
 echo "pass=$pass fail=$fail"

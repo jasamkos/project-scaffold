@@ -19,10 +19,12 @@ PR_FIELDS = "number,headRefName,mergedAt"
 
 
 def main(root, base, mode):
+    if mode not in ("local", "shared"):
+        return  # fail closed: an unknown mode must not read drafts
     sc = root / ".scaffold"
     state = sc / ".hookstate"
     state.mkdir(parents=True, exist_ok=True)
-    notes = committed_notes(root) if mode == "shared" else working_notes(root)
+    notes = working_notes(root) if mode == "local" else committed_notes(root)
     now, last = split(notes, merged_history(root, state, notes, base), base)
     board = {"base": base_info(root), "now": now, "last_round": last, "unclaimed": load_json(state / "unclaimed.json", [])}
     digest = hashlib.sha256(json.dumps(board, sort_keys=True).encode()).hexdigest()
@@ -34,21 +36,28 @@ def main(root, base, mode):
 
 def working_notes(root):
     sc = root / ".scaffold"
-    return [read_note(p.read_text(errors="replace"), str(p.relative_to(root))) for d in ("active", "queued") for p in sorted((sc / "work" / d).glob("*.md"))]
+    notes = []
+    for d in ("active", "queued"):
+        for p in sorted((sc / "work" / d).glob("*.md")):
+            try:
+                notes.append(read_note(p.read_text(encoding="utf-8", errors="replace"), str(p.relative_to(root))))
+            except OSError:
+                continue
+    return notes
 
 
 def committed_notes(root):
     # Everyone mode: only what HEAD carries reaches STATUS and the shared board; drafts stay local.
-    listing = git(root, "ls-tree", "-r", "--name-only", "HEAD", "--", ".scaffold/work/active", ".scaffold/work/queued")
-    return [read_note(git(root, "show", f"HEAD:{rel}"), rel) for rel in sorted(listing.splitlines()) if rel.endswith(".md")]
+    listing = git(root, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", ".scaffold/work/active", ".scaffold/work/queued")
+    return [read_note(git(root, "show", f"HEAD:{rel}"), rel) for rel in sorted(listing.split("\0")) if rel.endswith(".md")]
 
 
 def read_note(text, rel):
     head = {}
-    for line in text.replace("\r", "").splitlines()[:8]:
+    for line in text.replace("\r", "").split("\n")[:8]:  # not splitlines(): bash head -n 8 splits on \n only
         key, _, value = line.partition(":")
         if key in KEYS and key not in head:
-            head[key] = value.strip()
+            head[key] = value.strip(" \t\n\v\f\r")
     note = {"task": Path(rel).stem, "path": rel}
     note.update({k.replace("-", "_"): head.get(k, "") for k in KEYS})
     note["branches"] = tokens(head.get("branch", ""))
@@ -57,7 +66,7 @@ def read_note(text, rel):
 
 def tokens(s):
     # Same separators as lib.sh branch_tokens.
-    return [t for t in re.split(r"[\s,;()`]+", s) if t]
+    return [t for t in re.split(r"[ \t\r,;()`]+", s) if t]
 
 
 def split(notes, history, base):
@@ -133,15 +142,16 @@ def gh_json(root, args, deadline=None):
     if remaining <= 0:
         return None
     try:
-        out = subprocess.run(["gh"] + args, cwd=root, capture_output=True, text=True, timeout=remaining, check=True).stdout
-        return json.loads(out)
+        out = subprocess.run(["gh"] + args, cwd=root, capture_output=True, timeout=remaining, check=True).stdout
+        return json.loads(out.decode("utf-8", errors="replace"))
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
 
 
 def git(root, *args):
     try:
-        return subprocess.run(["git", "-C", str(root)] + list(args), capture_output=True, text=True, timeout=5).stdout
+        out = subprocess.run(["git", "-C", str(root)] + list(args), capture_output=True, timeout=5).stdout
+        return out.decode("utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return ""
 
@@ -166,13 +176,18 @@ def cache_age(path):
 
 def markdown(board):
     out = ["## Now", ""]
-    out += [f"- **{n['task']}** — {n['status'] or '-'} | waiting: {n['waiting_on'] or '-'} | next: {n['next'] or '-'} (`{n['path']}`)" for n in board["now"]] or ["- (no work in progress)"]
+    out += [f"- **{c(n['task'])}** — {c(n['status'])} | waiting: {c(n['waiting_on'])} | next: {c(n['next'])} (`{c(n['path'])}`)" for n in board["now"]] or ["- (no work in progress)"]
     out += ["", "## Last round", ""]
-    out += [f"- {n['merged_at']} **{n['task']}** — #{n['pr']}: {n['status'] or '-'}" for n in board["last_round"][:20]] or ["- (nothing merged yet)"]
+    out += [f"- {c(n['merged_at'])} **{c(n['task'])}** — #{c(n['pr'])}: {c(n['status'])}" for n in board["last_round"][:20]] or ["- (nothing merged yet)"]
     if board["unclaimed"]:
         out += ["", "## Merged without a work note", ""]
-        out += [f"- {u['merged_at']} #{u['number']} {u['title']} ({u['author']})" for u in board["unclaimed"][:30]]
+        out += [f"- {c(u.get('merged_at'))} #{c(u.get('number'))} {c(u.get('title'))} ({c(u.get('author'))})" for u in board["unclaimed"][:30]]
     return "\n".join(out)
+
+
+def c(value):
+    # Note text is untrusted: one line, and no "<!--" so it can never form a generated-block marker.
+    return " ".join(str(value if value is not None else "").split()).replace("<!--", "<! --") or "-"
 
 
 def write_status(path, project, body):
@@ -183,9 +198,10 @@ def write_status(path, project, body):
             text = f.read()
     else:
         text = f"# STATUS.md — {project}\n\n{BEGIN}\n{END}\n"
-    if BEGIN in text and END in text:
-        pre, rest = text.split(BEGIN, 1)
-        text = pre + block + rest.split(END, 1)[1]
+    # Innermost BEGIN..END pair; a stray marker elsewhere is left alone and a fresh block is appended.
+    pair = re.search(re.escape(BEGIN) + "(?:(?!" + re.escape(BEGIN) + ").)*?" + re.escape(END), text, re.S)
+    if pair:
+        text = text[: pair.start()] + block + text[pair.end():]
     else:
         text = text.rstrip("\r\n") + "\n\n" + block + "\n"
     write_atomic(path, text)
@@ -210,4 +226,7 @@ def write_atomic(path, text):
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]).resolve(), sys.argv[2] if len(sys.argv) > 2 else "main", sys.argv[3] if len(sys.argv) > 3 else "local")
+    try:
+        main(Path(sys.argv[1]).resolve(), sys.argv[2] if len(sys.argv) > 2 else "main", sys.argv[3] if len(sys.argv) > 3 else "local")
+    except Exception:  # hooks fail open; atomic writes leave no partial file
+        pass
