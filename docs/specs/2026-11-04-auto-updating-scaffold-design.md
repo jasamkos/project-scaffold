@@ -91,6 +91,13 @@ Replace `.scaffold/hooks/scaffold-hook.sh` with skill hooks; keep Signal Board +
 
 `skill/SKILL.md` + `skill/templates/{docs,hooks}/`; `~/.claude/skills/project-scaffold-init` becomes a symlink to `skill/`. `docs/specs/` for this file.
 
+## Plan-time refinements (2026-11-04)
+
+- Just-me hooks register once in `~/.claude/settings.json` through a global `dispatch` script, not in `.claude/settings.local.json`: worktrees have no copy of that untracked file. Everyone-mode repos make `dispatch` exit so hooks never run twice.
+- Just-me `gate` cannot use the branch diff (notes are untracked): it requires the note to be newer than the branch's last allowed push.
+- A note is done when its first listed branch is merged; stacked PRs list the top branch first.
+- The Signal Board push becomes a generic `EXTRA_PUSHES` list (`url|collection|doc|file`), so the skill carries no ai_gateway specifics.
+
 ## Out of scope
 
 CI enforcement (D3); Jira in `catchup` (needs MCP or API token; stays in the `haiku-refresh` extra); multi-repo scaffolds; Jira tickets on the status board (needs the Jira pull; ai_gateway's Launch Board keeps its own Jira-driven build); boards aggregating several repos.
