@@ -143,6 +143,100 @@ t_lib_crlf_and_body_keys() {
   eq "$(notes_for_branch feat/body)" ""
 }
 
+gate() { PATH="$FAKEBIN:$PATH" "$R/.scaffold/hooks/gate" <<<"$(hookjson "$1")"; }
+t_gate_fast_path() {
+  T=gate_fast_path; mkrepo local
+  printf '#!/bin/sh\necho called >>"%s/git.calls"\nexec /usr/bin/git "$@"\n' "$BASE" >"$FAKEBIN/git"; chmod +x "$FAKEBIN/git"
+  eq "$(gate 'ls -la')" ""
+  if [ -e "$BASE/git.calls" ]; then bad "git ran for non-push command"; else ok; fi
+}
+t_gate_no_note() {
+  T=gate_no_note; mkrepo local; git -C "$R" switch -qc feat/a
+  deny_has "$(gate 'git push -u origin feat/a')" "no work note lists branch feat/a"
+}
+t_lib_target_dir() {
+  T=lib_target_dir; mkrepo local; . "$R/.scaffold/hooks/lib.sh"
+  eq "$(target_dir 'git -C /x/y push' /c)" "/x/y"
+  eq "$(target_dir 'git -C "/x/y z" push' /c)" "/x/y z"
+  eq "$(target_dir "git -C '/x/y z' push" /c)" "/x/y z"
+  eq "$(target_dir 'cd /x/y && git push' /c)" "/x/y"
+  eq "$(target_dir 'cd "/x/y z" && git push' /c)" "/x/y z"
+  eq "$(target_dir "cd '/x/y z' && git push" /c)" "/x/y z"
+  eq "$(target_dir 'git -C rel push' /c)" "/c/rel"
+  eq "$(target_dir 'git push' /c)" "/c"
+}
+t_gate_targets_command_repo() {
+  T=gate_targets_command_repo; mkrepo local
+  git -C "$R" worktree add -q "$BASE/wt" -b feat/w
+  deny_has "$(gate "git -C $BASE/wt push -u origin feat/w")" "no work note lists branch feat/w"
+  deny_has "$(gate "cd $BASE/wt && git push")" "no work note lists branch feat/w"
+  deny_has "$(gate "git -C \"$BASE/wt\" push")" "no work note lists branch feat/w"
+  deny_has "$(gate "git -C '$BASE/wt' push")" "no work note lists branch feat/w"
+  deny_has "$(gate "cd \"$BASE/wt\" && git push")" "no work note lists branch feat/w"
+  deny_has "$(gate "cd '$BASE/wt' && git push")" "no work note lists branch feat/w"
+}
+t_gate_base_and_skip() {
+  T=gate_base_and_skip; mkrepo local
+  eq "$(gate 'git push origin main')" ""
+  git -C "$R" switch -qc feat/a
+  eq "$(gate 'SCAFFOLD_SKIP=1 git push')" ""
+}
+t_gate_incomplete() {
+  T=gate_incomplete; mkrepo local; git -C "$R" switch -qc feat/a
+  printf 'status: x\nbranch: feat/a\nwaiting-on:\nnext: y\n' >"$R/.scaffold/work/active/a.md"
+  deny_has "$(gate 'gh pr create --fill')" "header"
+}
+t_gate_local_stamp() {
+  T=gate_local_stamp; mkrepo local; git -C "$R" switch -qc feat/a; note a feat/a
+  eq "$(gate 'git push')" ""
+  eq "$(gate 'gh pr create --fill')" ""
+  touch -t 202001010000 "$R/.scaffold/work/active/a.md"
+  deny_has "$(gate 'git push')" "not updated since the last"
+  touch -t 202001010000 "$R/.scaffold/.hookstate/push-feat_a"; touch "$R/.scaffold/work/active/a.md"
+  eq "$(gate 'git push')" ""
+}
+t_gate_local_compound() {
+  T=gate_local_compound; mkrepo local; git -C "$R" switch -qc feat/a; note a feat/a
+  eq "$(gate 'git push && gh pr create --fill')" ""
+  deny_has "$(gate 'git push')" "not updated since the last push"
+  deny_has "$(gate 'gh pr create --fill')" "not updated since the last pr"
+}
+t_gate_shared_diff() {
+  T=gate_shared_diff; mkrepo shared; git -C "$R" switch -qc feat/a; note a feat/a
+  deny_has "$(gate 'git push -u origin feat/a')" "not committed"
+  commit_note a
+  eq "$(gate 'git push -u origin feat/a')" ""
+}
+t_gate_shared_checks_committed_copy() {
+  T=gate_shared_checks_committed_copy; mkrepo shared; git -C "$R" switch -qc feat/a
+  printf 'status: x\nbranch: feat/a\nwaiting-on:\nnext: y\n' >"$R/.scaffold/work/active/a.md"; commit_note a
+  note a feat/a
+  deny_has "$(gate 'git push')" "committed copy"
+}
+t_gate_shared_ignores_worktree_copy() {
+  T=gate_shared_ignores_worktree_copy; mkrepo shared; git -C "$R" switch -qc feat/a; note a feat/a; commit_note a
+  printf 'status: x\nbranch: other\n' >"$R/.scaffold/work/active/a.md"
+  eq "$(gate 'git push')" ""
+}
+t_gate_shared_note_from_main() {
+  T=gate_shared_note_from_main; mkrepo shared; note a feat/a; commit_note a; git -C "$R" push -q origin main
+  git -C "$R" switch -qc feat/a; echo code >"$R/code"; git -C "$R" add code; git -C "$R" commit -qm code
+  deny_has "$(gate 'git push')" "not changed on this branch"
+}
+t_gate_shared_missing_base_ref() {
+  T=gate_shared_missing_base_ref; mkrepo shared; git -C "$R" switch -qc feat/a; note a feat/a; commit_note a
+  git -C "$R" update-ref -d refs/remotes/origin/main
+  eq "$(gate 'git push')" ""
+}
+t_gate_deny_text_sanitized() {
+  T=gate_deny_text_sanitized; mkrepo local; git -C "$R" switch -qc 'feat/a$(x)"q'
+  deny_has "$(gate 'git push')" 'no work note lists branch feat/a(x)q'
+}
+t_gate_fail_open() {
+  T=gate_fail_open; mkrepo local; git -C "$R" switch -qc feat/a; rm "$R/.scaffold/hooks/lib.sh"
+  eq "$(gate 'git push')" ""
+}
+
 # --- runner ---
 for T in $(declare -F | awk '{print $3}' | grep '^t_' | grep -- "${1:-}"); do "$T"; done
 echo "pass=$pass fail=$fail"

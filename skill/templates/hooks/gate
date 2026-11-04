@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# PreToolUse(Bash): refuse git push / gh pr create until the branch's work note is current (spec D2, D7).
+set -uo pipefail
+input=$(cat)
+cmd=$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null) || exit 0
+# Runs before every Bash call: nothing above may spawn git.
+q="'"; arg="(\"[^\"]*\"|${q}[^$q]*$q|[^ ]+)"
+push_re="(^|[;&|( ])git( -[cC] $arg)* push( |\$)"
+[[ $cmd =~ $push_re || $cmd == *"gh pr create"* ]] || exit 0
+[ "${SCAFFOLD_SKIP:-}" = 1 ] && exit 0
+grep -qE '(^|[;&| ])SCAFFOLD_SKIP=1 ' <<<"$cmd" && exit 0
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh" 2>/dev/null || exit 0
+dir=$(jq -r '.cwd // empty' <<<"$input"); dir=$(target_dir "$cmd" "${dir:-$PWD}")
+root=$(scaffold_root "$dir") || exit 0
+load_config "$root" || exit 0
+branch=$(git -C "$dir" branch --show-current 2>/dev/null) || exit 0
+if [ -z "$branch" ] || [ "$branch" = "$BASE_BRANCH" ]; then exit 0; fi
+b=$(safe_text <<<"$branch")
+
+deny() {
+  jq -n --arg r "scaffold gate: $1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
+  exit 0
+}
+nonote="no work note lists branch $b. Create $SC/work/active/<task>.md whose first lines are status:, branch: $b, waiting-on:, next:, then retry."
+
+if [ "$SCAFFOLD_MODE" = shared ]; then
+  # The PR carries the committed copy: discover and validate from HEAD, never the working tree.
+  rel=$(committed_note_for_branch "$dir" "$branch")
+  if [ -z "$rel" ]; then
+    wt=$(notes_for_branch "$branch" | head -1)
+    [ -n "$wt" ] || deny "$nonote"
+    deny "$(safe_text <<<"${wt#"$root"/}") is not committed on $b. Commit it with the change, then retry."
+  fi
+  r=$(safe_text <<<"$rel")
+  committed=$(mktemp) || exit 0
+  trap 'rm -f "$committed"' EXIT
+  git -C "$dir" show "HEAD:$rel" >"$committed" 2>/dev/null || exit 0
+  headers_complete "$committed" || deny "the committed copy of $r has an incomplete header. Commit the fixed header, then retry."
+  changed=$(git -C "$dir" diff --name-only "$REMOTE/$BASE_BRANCH...HEAD" -- "$rel" 2>/dev/null) || exit 0
+  [ -n "$changed" ] || deny "$r is not changed on this branch. Update its header for this push, commit it with the change, then retry."
+else
+  note=$(notes_for_branch "$branch" | head -1)
+  [ -n "$note" ] || deny "$nonote"
+  headers_complete "$note" || deny "$(safe_text <<<"${note#"$root"/}") header is incomplete: fill status:, branch:, waiting-on:, next:, then retry."
+  # Notes are untracked here: freshness is judged per command kind against the last allowed run.
+  kinds=""; [[ $cmd =~ $push_re ]] && kinds=push; [[ $cmd == *"gh pr create"* ]] && kinds="$kinds pr"
+  s=$(tr / _ <<<"$branch")
+  for k in $kinds; do
+    [ "$note" -nt "$STATE/$k-$s" ] || deny "$(safe_text <<<"${note#"$root"/}") not updated since the last $k of $b. Update status:/waiting-on:/next:, then retry."
+  done
+  mkdir -p "$STATE" && for k in $kinds; do touch "$STATE/$k-$s"; done
+fi
+exit 0

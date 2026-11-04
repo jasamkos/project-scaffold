@@ -67,6 +67,26 @@ notes_for_branch() {
   return 0
 }
 
+# Everyone mode: repo-relative path of the first committed (HEAD) active/queued note listing branch $2 in repo $1.
+committed_note_for_branch() {
+  local p
+  while IFS= read -r p; do
+    case $p in *.md) ;; *) continue ;; esac
+    git -C "$1" show "HEAD:$p" 2>/dev/null | header /dev/stdin branch | branch_tokens | grep -qxF -- "$2" && { echo "$p"; return 0; }
+  done < <(git -C "$1" ls-tree -r --name-only HEAD -- .scaffold/work/active .scaffold/work/queued 2>/dev/null)
+  return 0
+}
+
+# Repo a gated command acts on: `git -C <dir> … push` or a leading `cd <dir> &&` (dir bare, "…" or '…'), else the hook cwd ($2).
+target_dir() {
+  local d="" q="'"
+  local dir_re="(\"[^\"]+\"|${q}[^$q]+$q|[^ ;&]+)"
+  if [[ $1 =~ git\ -[cC]\ $dir_re\ .*push ]]; then d=${BASH_REMATCH[1]}
+  elif [[ $1 =~ ^[[:space:]]*cd\ ${dir_re}[[:space:]]*\&\& ]]; then d=${BASH_REMATCH[1]}; fi
+  case $d in \"*\" | "$q"*"$q") d=${d#?}; d=${d%?} ;; esac
+  case $d in "") echo "$2" ;; /*) echo "$d" ;; *) echo "$2/$d" ;; esac
+}
+
 headers_complete() {
   local k
   for k in status branch waiting-on next; do [ -n "$(header "$1" "$k")" ] || return 1; done
