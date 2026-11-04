@@ -6,6 +6,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 mode="" repo="" board="" register="" extras=""
 while [ $# -gt 0 ]; do
+  case $1 in -h | --help) sed -n '3,4p' "$0" | cut -c3-; exit 0 ;; esac
   [ $# -ge 2 ] || { echo "missing value for $1" >&2; exit 2; }
   case $1 in
     --mode) mode=$2 ;;

@@ -674,6 +674,10 @@ t_install_rejects_bad_input() {
   [ -e "$R/.scaffold" ] && bad "wrote hooks despite bad settings" || ok
   unset SCAFFOLD_HOME
 }
+t_install_help() {
+  needs_skill || return 0
+  T=install_help; out=$("$SKILL/install.sh" --help 2>&1); eq "$?" "0"; has "$out" "Usage: install.sh"
+}
 t_dispatch_worktree_and_shared() {
   needs_skill || return 0
   T=dispatch_worktree_and_shared; mkrepo local; echo '[]' >"$GHOUT"
