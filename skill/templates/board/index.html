@@ -26,6 +26,7 @@ li:first-child { border-top: 0; padding-top: 0 }
 // Note text is untrusted (anyone with repo access writes it): build nodes with textContent only, coerce every field.
 const S = (x, d = "") => String(x ?? d);
 const meta = msg => { document.getElementById("meta").textContent = msg; };
+function clearAll() { ["now", "last", "unclaimed"].forEach(i => document.getElementById(i).replaceChildren()); document.getElementById("unclaimedBox").hidden = true; }
 function item(title, sub) {
   const li = document.createElement("li");
   const t = document.createElement("div"); t.className = "task"; t.textContent = S(title);
@@ -41,19 +42,19 @@ function render(b) {
   if (!b || typeof b !== "object") { meta("No board data yet: the next Claude session in this repo pushes it."); return; }
   meta(`Updated ${S(b.generated_at, "?")} · ${S(b.base?.branch, "?")} @ ${S(b.base?.commit, "?")}`);
   fill("now", b.now, n => item(n.task, `${S(n.status, "-")} · waiting: ${S(n.waiting_on, "-")} · next: ${S(n.next, "-")} · ${S(n.branch)}`), "No work in progress.");
-  fill("last", b.last_round, n => item(n.task, `#${S(n.pr)} merged ${S(n.merged_at)} · ${S(n.status)}`), "Nothing merged yet.");
+  fill("last", b.last_round, n => item(n.task, `${n.pr == null || n.pr === "" ? "" : "#" + S(n.pr) + " "}merged ${S(n.merged_at)} · ${S(n.status)}`), "Nothing merged yet.");
   const un = Array.isArray(b.unclaimed) ? b.unclaimed : [];
   document.getElementById("unclaimedBox").hidden = !un.length;
-  fill("unclaimed", un, u => item(`#${S(u.number)} ${S(u.title)}`, `${S(u.merged_at)} · ${S(u.author)}`), "");
+  fill("unclaimed", un, u => item(`${u.number == null || u.number === "" ? "" : "#" + S(u.number) + " "}${S(u.title)}`, `${S(u.merged_at)} · ${S(u.author)}`), "");
 }
 (async () => {
   try {
     const sample = new URLSearchParams(location.search).get("sample");
-    if (sample) { render(await (await fetch(sample)).json()); return; }
+    if (sample && typeof claude === "undefined") { render(await (await fetch(sample)).json()); return; }
     const db = typeof claude === "undefined" ? null : await claude.use("db");
     if (!db) { meta("Sign in to see this board."); return; }
-    db.doc("board/current").onSnapshot(s => { try { render(s.exists ? s.data() : null); } catch { meta("Could not render board data."); } },
-      () => meta("Could not load board data."));
-  } catch { meta("Could not load board data."); }
+    db.doc("board/current").onSnapshot(s => { try { render(s.exists ? s.data() : null); } catch { clearAll(); meta("Could not render board data."); } },
+      () => { clearAll(); meta("Could not load board data."); });
+  } catch { clearAll(); meta("Could not load board data."); }
 })();
 </script>
