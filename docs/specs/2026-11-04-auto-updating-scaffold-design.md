@@ -13,6 +13,7 @@ Success: every merged PR made through a Claude session shows in STATUS as soon a
 - Nothing applies updates: `refresh.sh` writes `inbox/<date>-refresh.md` proposals only; 4 piled up 2026-10-30 → 11-04 and STATUS lagged 59 merges.
 - Headless Jira never ran: allowed tool name `mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql` does not exist in that environment; `--setting-sources project` likely hides the Atlassian plugin.
 - Stop hook nags once about the work note, never STATUS; Launch Board not covered.
+- Note matching is a substring test (`grep -qF "$branch"`): on `main`, any note whose `branch:` line mentions "origin/main" claims the session, so the Stop hook demanded an unrelated note's update (observed 2026-11-04). New hooks match whole branch tokens only, and on the base branch `checkpoint` accepts any updated note.
 - Hardcoded: repo root, `origin main`, Jira project `AIG`, Signal Board URL.
 
 ## Decisions
