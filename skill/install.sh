@@ -17,7 +17,9 @@ while [ $# -gt 0 ]; do
   esac
   shift 2
 done
-TMPS=""; trap 'rm -f $TMPS' EXIT  # temp files live beside their targets so mv stays atomic
+TMPS=()  # temp files live beside their targets so mv stays atomic
+cleanup() { [ ${#TMPS[@]} -eq 0 ] || rm -f "${TMPS[@]}"; }
+trap cleanup EXIT
 home=${SCAFFOLD_HOME:-$HOME/.claude}
 pushes=$home/scaffold/pushes
 board_re='^https://claude\.ai/[A-Za-z0-9/_-]+$'
@@ -50,7 +52,7 @@ main() {
     cp "$here/dispatch" "$here/templates/hooks/lib.sh" "$home/scaffold/"; chmod +x "$home/scaffold/dispatch"
     [ -e "$home/scaffold/repos" ] || (umask 077; : >"$home/scaffold/repos")
     append_once "$home/scaffold/repos" "$repo"
-    merge_settings "$settings" "\"$home/scaffold/dispatch\" "
+    merge_settings "$settings" "\"$home/scaffold/dispatch\" " "$home/scaffold/dispatch "
   else
     append_once "$repo/.gitignore" ".scaffold/STATUS.md"
     append_once "$repo/.gitignore" ".scaffold/.hookstate/"
@@ -98,7 +100,7 @@ install_hooks() {
 put_push() {  # root kind payload
   local tmp
   mkdir -p "$home/scaffold"
-  tmp=$(mktemp "$pushes.XXXXXX"); TMPS+=" $tmp"  # mktemp creates 0600
+  tmp=$(mktemp "$pushes.XXXXXX"); TMPS+=("$tmp")  # mktemp creates 0600
   { [ ! -f "$pushes" ] || awk -F'|' -v r="$1" -v k="$2" -v u="${3%%|*}" \
       '!($1 == r && $2 == k && (k == "board" || $3 == u))' "$pushes"; echo "$1|$2|$3"; } >"$tmp"
   mv "$tmp" "$pushes"
@@ -106,7 +108,7 @@ put_push() {  # root kind payload
 
 set_key() {  # file key value: replace or append KEY=value
   local tmp
-  tmp=$(mktemp "$1.XXXXXX"); TMPS+=" $tmp"
+  tmp=$(mktemp "$1.XXXXXX"); TMPS+=("$tmp")
   grep -v "^$2=" "$1" >"$tmp" || true
   echo "$2=$3" >>"$tmp"
   mv "$tmp" "$1"
@@ -115,13 +117,13 @@ set_key() {  # file key value: replace or append KEY=value
 append_once() { touch "$1"; grep -qxF -- "$2" "$1" || echo "$2" >>"$1"; }
 
 # Drop exactly the commands this installer writes from every registration (siblings, matcher and registrations
-# that were already empty stay), then add ours once per event.
+# that were already empty stay; the unquoted form earlier versions wrote counts as ours), then add ours once per event.
 merge_settings() {
-  local file=$1 prefix=$2 tmp
+  local file=$1 prefix=$2 legacy=${3:-} tmp
   [ -s "$file" ] || echo '{}' >"$file"
-  tmp=$(mktemp "$file.XXXXXX"); TMPS+=" $tmp"
-  jq --arg p "$prefix" '
-    [$p + "brief", $p + "checkpoint", $p + "gate"] as $mine
+  tmp=$(mktemp "$file.XXXXXX"); TMPS+=("$tmp")
+  jq --arg p "$prefix" --arg l "$legacy" '
+    ([$p, $l] | map(select(. != "")) | map([. + "brief", . + "checkpoint", . + "gate"]) | add) as $mine
     | def strip: map(. as $e | ($e.hooks // []) as $h
         | ($h | map(select((.command // "") as $c | $mine | index($c) | not))) as $kept
         | if ($h | length) > 0 and ($kept | length) == 0 then empty else (if $e.hooks == null then $e else $e + {hooks: $kept} end) end);

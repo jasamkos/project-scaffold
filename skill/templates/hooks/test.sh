@@ -620,6 +620,17 @@ t_install_local_idempotent() {
   eq "$(git -C "$R" status --short)" ""
   unset SCAFFOLD_HOME
 }
+t_install_upgrades_unquoted_entries() {
+  needs_skill || return 0
+  T=install_upgrades_unquoted_entries; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME"
+  d=$SCAFFOLD_HOME/scaffold/dispatch
+  jq -n --arg d "$d" '{hooks:{SessionStart:[{hooks:[{type:"command",command:($d+" brief")}]}],Stop:[{hooks:[{type:"command",command:($d+" checkpoint")}]}],PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:($d+" gate")}]}]}}' >"$SCAFFOLD_HOME/settings.json"
+  "$SKILL/install.sh" --mode local --repo "$R" >/dev/null; "$SKILL/install.sh" --mode local --repo "$R" >/dev/null
+  for ev in SessionStart Stop PreToolUse; do
+    eq "$(jq --arg e "$ev" '[.hooks[$e][].hooks[].command | select(contains("scaffold/dispatch"))] | length' "$SCAFFOLD_HOME/settings.json")" "1"
+  done
+  unset SCAFFOLD_HOME
+}
 t_install_shared() {
   needs_skill || return 0
   T=install_shared; mkrepo shared; rm -rf "$R/.scaffold"
