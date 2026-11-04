@@ -1,0 +1,91 @@
+# Auto-updating project scaffold — design
+
+Date: 2026-11-04. Status: approved in chat (brainstorming sections 1–3), awaiting spec review. Source skill today: `~/.claude/skills/project-scaffold-init` (docs only, no hooks, 2026-10-12). Prior art: ai_gateway's local `.scaffold/hooks/scaffold-hook.sh` + `refresh.sh`.
+
+## Goal
+
+The scaffold (`PROJECT.md`, `STATUS.md`, `DECISIONS.md`, work notes) updates when work happens, not on a schedule: the session that completes a task writes the update, and in shared mode the update ships in the same PR as the code, so everyone who pulls `main` sees current status. Setup asks whether the scaffold is for everyone (committed) or just the user (local, untracked).
+
+Success: every merged PR made through a Claude session shows in STATUS as soon as it is on `main`, for everyone who pulls; merges made outside Claude show by the next `catchup` run.
+
+## Why the current hooks don't achieve it (evidence, ai_gateway 2026-11-04)
+
+- Nothing applies updates: `refresh.sh` writes `inbox/<date>-refresh.md` proposals only; 4 piled up 2026-10-30 → 11-04 and STATUS lagged 59 merges.
+- Headless Jira never ran: allowed tool name `mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql` does not exist in that environment; `--setting-sources project` likely hides the Atlassian plugin.
+- Stop hook nags once about the work note, never STATUS; Launch Board not covered.
+- Hardcoded: repo root, `origin main`, Jira project `AIG`, Signal Board URL.
+
+## Decisions
+
+| # | Decision | Rejected |
+|---|---|---|
+| D1 | Event-driven: session that does the work writes the update | Scheduled LLM refresh as primary path |
+| D2 | Shared mode: scaffold update rides in the same PR as the code | Direct-to-main or side branch (breaks with branch protection / signed-commit rulesets) |
+| D3 | Enforcement by Claude hooks only; daily non-LLM `catchup` as backstop for non-Claude work | CI check failing PRs without note change (needs team buy-in, bot exemptions) |
+| D4 | One layout `.scaffold/` for both modes | Shared mode root-level files (current skill) |
+| D5 | `STATUS.md` generated from work-note headers + `gh`; uncommitted in shared mode | Hand-edited shared STATUS (certain merge conflicts) |
+| D6 | Merge state derived from `gh` by branch; nothing written after merge | Post-merge commit setting `status: done` |
+| D7 | Every hook fails open on its own error; only `gate`'s rule refuses | Fail closed (a script bug would block pushes) |
+
+## Layout and ownership
+
+| Path | Written by | Shared mode |
+|---|---|---|
+| `.scaffold/work/active/<task>.md` | session working that branch | committed, in the task's PR |
+| `.scaffold/work/completed/<task>.md` | owner, in a later PR | committed |
+| `.scaffold/PROJECT.md`, `DECISIONS.md` | by hand, rarely | committed |
+| `.scaffold/STATUS.md` | `render` (generated) | git-ignored |
+| `.scaffold/hooks/*`, `.scaffold/config` | skill install | committed |
+| `.scaffold/.hookstate/` | hooks | ignored in both modes |
+
+Just-me mode: `.scaffold/` in `.git/info/exclude`, hooks in `.claude/settings.local.json`, loaded via `CLAUDE.local.md`. Everyone mode: hooks in committed `.claude/settings.json`; `.gitignore` gets `.scaffold/STATUS.md` and `.scaffold/.hookstate/`.
+
+Work note header (first four lines, unchanged from today): `status:`, `branch:` (one or more branch names), `waiting-on:`, `next:`. Shared-mode notes are team-visible: no personal asides.
+
+`.scaffold/config` (shell `KEY=value`): `BASE_BRANCH` (default `main`), `REMOTE` (default `origin`), `JIRA_PROJECT` (optional), `EXTRAS` (subset of `catchup signal-board haiku-refresh`, just-me only).
+
+## Components (`.scaffold/hooks/`)
+
+1. `brief` — SessionStart. Runs `render`, prints note headers in progress, names the note whose `branch:` matches the current branch; on a non-base branch without a note, asks for one. Lists the user's own done notes to move to `completed/` in their next PR.
+2. `checkpoint` — Stop. Once per session: if the transcript shows repo edits, commit, push or `gh pr` activity and the branch's note is not newer than session start, return `decision: block` with the update instruction. Same detection as today's hook.
+3. `gate` — PreToolUse on Bash matching `git push` or `gh pr create`. Allow when: pushing to `BASE_BRANCH`, `SCAFFOLD_SKIP=1`, or `git diff --name-only $REMOTE/$BASE_BRANCH...HEAD` contains a note whose `branch:` matches and whose four header lines are non-empty. Else deny with reason (create/update note, commit, retry). Local git only, works offline.
+4. `render` — builds `STATUS.md`: "Now" from notes not merged, "Last round" from notes whose branch PR is merged (`gh pr list --head <b> --state merged`, cached in `.hookstate/`), newest first. `gh` missing or offline → header text only, never blocks. In just-me mode, content outside `<!-- scaffold:generated -->` markers is preserved (hand-curated sections).
+5. `catchup` — optional daily job (launchd/cron), plain git + `gh`, no LLM: records merged PRs since last run that no note claims into a "Unclaimed merges" block that `render` includes.
+
+Just-me extras, opt-in: `signal-board` (current DO-FIRST push), `haiku-refresh` (current `refresh.sh` with Jira tool name fixed and parameterised).
+
+## Task lifecycle
+
+1. Session starts on branch X → `brief`.
+2. Commits → no hook.
+3. `git push` / `gh pr create` → `gate`.
+4. Session end → `checkpoint`.
+5. Merge (queue, web UI, squash) → nothing written; next `render` moves the note to "Last round".
+6. Done notes accumulate in `active/` until the owner moves them in a later PR (`brief` reminds).
+
+Edge cases: stacked PRs / note spanning branches (`branch:` lists several); worktrees resolve to the main checkout via `git rev-parse --git-common-dir`; just-me work on base branch → `checkpoint` only; bot branches → `SCAFFOLD_SKIP=1` or no Claude session at all.
+
+## Install (`project-scaffold-init`)
+
+1. Ask mode (Everyone / Just me) via `AskUserQuestion`; restate its meaning.
+2. Write docs into `.scaffold/` from templates; seed from GitHub, Jira, docs (existing Steps 2–4).
+3. Copy `templates/hooks/*` → `.scaffold/hooks/`; write `.scaffold/config`.
+4. Merge hook registration into the right settings file with `jq`; never overwrite existing hooks.
+5. Just me: offer extras. Everyone: create branch, commit setup with its own work note, open PR (outward: confirm first).
+6. Run `.scaffold/hooks/test.sh` as smoke check.
+
+## Testing
+
+`templates/hooks/test.sh`, no framework: temp repo + bare remote, hook JSON on stdin, fake `gh` on `PATH`. Cases: `gate` denies without note, allows with note, honours `SCAFFOLD_SKIP`, ignores base-branch pushes, fails open on crash; `checkpoint` blocks once; `render` groups merged branches and survives missing `gh`; just-me markers preserve hand sections. Each rule mutation-checked (break it, test fails).
+
+## ai_gateway migration (just-me, nothing pushed)
+
+Replace `.scaffold/hooks/scaffold-hook.sh` with skill hooks; keep Signal Board + Haiku refresh as extras (fix Jira tool name); wrap generated "Now"/"Last round" in markers, keep lanes/team-PR/Jira sections outside them; launchd job points at the new `haiku-refresh`/`catchup`.
+
+## Repo layout (github.com/jasamkos/project-scaffold, private)
+
+`skill/SKILL.md` + `skill/templates/{docs,hooks}/`; `~/.claude/skills/project-scaffold-init` becomes a symlink to `skill/`. `docs/specs/` for this file.
+
+## Out of scope
+
+CI enforcement (D3); Jira in `catchup` (needs MCP or API token; stays in the `haiku-refresh` extra); multi-repo scaffolds; Launch Board automation (project-specific, stays a just-me extra if wanted later).
