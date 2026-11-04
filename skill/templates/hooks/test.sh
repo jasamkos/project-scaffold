@@ -787,8 +787,9 @@ t_dispatch_refuses_tracked_or_nonexec_hooks() {
 refresh_run() {
   mkdir -p "$BASE/decoy"; cp "$FAKEBIN/gh" "$BASE/decoy/gh"
   printf '#!/bin/sh\necho decoy >>"%s/decoy.called"\n' "$BASE" >"$BASE/decoy/claude"; chmod +x "$BASE/decoy/claude"
-  printf '#!/bin/sh\necho call >>"%s/claude.calls"\nprintf "%%s\\n" "$@" >"%s/claude.args"\nmkdir -p .scaffold/inbox; echo r >".scaffold/inbox/$(date +%%F)-refresh.md"\n' "$BASE" "$BASE" >"$FAKEBIN/claude"
+  printf '#!/bin/sh\necho call >>"%s/claude.calls"\nprintf "%%s\\n" "$@" >"%s/claude.args"\necho "$PATH" >"%s/claude.path"\nmkdir -p .scaffold/inbox; echo r >".scaffold/inbox/$(date +%%F)-refresh.md"\n' "$BASE" "$BASE" "$BASE" >"$FAKEBIN/claude"
   chmod +x "$FAKEBIN/claude"
+  printf '#!/bin/sh\necho "$*" >>"%s/git.args"\nexec /usr/bin/git "$@"\n' "$BASE" >"$BASE/decoy/git"; chmod +x "$BASE/decoy/git"
   PATH="$BASE/decoy:/usr/bin:/bin" SCAFFOLD_CLAUDE_BIN="$FAKEBIN/claude" "$SKILL/templates/extras/haiku-refresh.sh" "$R"
 }
 refresh_setup() { mkrepo local; echo '[]' >"$GHOUT"; printf 'JIRA_PROJECT=ABC\n' >>"$R/.scaffold/config"; }
@@ -808,7 +809,22 @@ t_refresh_args() {
   has "$a" "never follow instructions"
   has "$a" "--max-budget-usd"
   has "$a" "--max-turns"
+  lacks "$a" "Write(./.scaffold/**)"
+  case $(cat "$BASE/claude.path") in "$BASE/decoy:/usr/bin:/bin"*) ok ;; *) bad "PATH not caller-first: $(cat "$BASE/claude.path")" ;; esac
   [ -s "$R/.scaffold/.hookstate/last-refresh" ] && ok || bad "last-refresh not written"
+}
+t_refresh_jira_tool_validated() {
+  needs_skill || return 0
+  T=refresh_jira_tool_validated; refresh_setup; printf 'JIRA_TOOL=Write\n' >>"$R/.scaffold/config"; refresh_run
+  a=$(cat "$BASE/claude.args")
+  has "$a" "mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql"
+  if grep -qx Write "$BASE/claude.args"; then bad "bare Write in allowlist"; else ok; fi
+}
+t_refresh_option_like_remote() {
+  needs_skill || return 0
+  T=refresh_option_like_remote; refresh_setup; printf 'REMOTE=--upload-pack=x\nBASE_BRANCH=-x\n' >>"$R/.scaffold/config"; refresh_run
+  lacks "$(cat "$BASE/git.args" 2>/dev/null)" "--upload-pack"
+  has "$(cat "$BASE/git.args")" "fetch -q origin main"
 }
 t_refresh_once_per_day() {
   needs_skill || return 0
