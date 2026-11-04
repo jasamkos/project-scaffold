@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Global hook entry for just-me scaffolds (registered once in ~/.claude/settings.json): runs the checkout's
 # .scaffold/ hook, worktrees included, only for repos the user installed (registry), never because a repo ships one.
+[ "${SCAFFOLD_HEADLESS:-}" = 1 ] && exit 0  # unattended refresh sessions must not get brief/gate behaviour
 input=$(cat)
 case ${1:-} in brief | checkpoint | gate) ;; *) exit 0 ;; esac
 home=${SCAFFOLD_HOME:-$HOME/.claude}/scaffold

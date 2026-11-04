@@ -10,5 +10,6 @@
     <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>{{HOUR}}</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>{{HOUR}}</integer><key>Minute</key><integer>0</integer></dict>
   </array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
   <key>StandardOutPath</key><string>{{LOG}}</string><key>StandardErrorPath</key><string>{{LOG}}</string>
 </dict></plist>

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Stop: once per session, block if the session did repo work but its work note did not change (spec D1).
 set -uo pipefail
+[ "${SCAFFOLD_HEADLESS:-}" = 1 ] && exit 0  # unattended refresh sessions must not get brief/gate behaviour
 input=$(cat)
 [ "$(jq -r '.stop_hook_active // false' <<<"$input" 2>/dev/null)" = true ] && exit 0
 # shellcheck source=lib.sh

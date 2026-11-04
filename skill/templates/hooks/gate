@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # PreToolUse(Bash): refuse git push / gh pr create until the branch's work note is current (spec D2, D7).
 set -uo pipefail
+[ "${SCAFFOLD_HEADLESS:-}" = 1 ] && exit 0  # unattended refresh sessions must not get brief/gate behaviour
 input=$(cat)
 cmd=$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null) || exit 0
 # shellcheck source=lib.sh
@@ -43,11 +44,13 @@ else
   [ -n "$note" ] || deny "$nonote"
   headers_complete "$note" || deny "$(safe_text <<<"${note#"$root"/}") header is incomplete: fill status:, branch:, waiting-on:, next:, then retry."
   # Notes are untracked here: freshness is judged per command kind against the last allowed run.
+  # A stamp holds the HEAD of the last allowed run: a retry of the same commit (blocked or failed push) passes.
   kinds=$(cmd_kinds "$cmd")
   s=$(tr / _ <<<"$branch")
+  head=$(git -C "$top" rev-parse HEAD 2>/dev/null) || head=""
   for k in $kinds; do
-    [ "$note" -nt "$STATE/$k-$s" ] || deny "$(safe_text <<<"${note#"$root"/}") not updated since the last $k of $b. Update status:/waiting-on:/next:, then retry."
+    [ "$note" -nt "$STATE/$k-$s" ] || { [ -n "$head" ] && [ "$(cat "$STATE/$k-$s" 2>/dev/null)" = "$head" ]; } || deny "$(safe_text <<<"${note#"$root"/}") not updated since the last $k of $b. Update status:/waiting-on:/next:, then retry."
   done
-  mkdir -p "$STATE" && for k in $kinds; do touch "$STATE/$k-$s"; done
+  mkdir -p "$STATE" && for k in $kinds; do echo "$head" >"$STATE/$k-$s"; done
 fi
 exit 0

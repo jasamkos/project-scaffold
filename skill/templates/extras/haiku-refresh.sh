@@ -17,6 +17,8 @@ state=.scaffold/.hookstate today=$(date +%F)
 out=.scaffold/inbox/$today-refresh.md
 mkdir -p "$state" .scaffold/inbox
 [ "$(cut -c1-10 "$state/last-refresh" 2>/dev/null)" = "$today" ] && exit 0
+# A lock older than 2 h is a killed run: clear it (fixed path, rmdir only) so refresh cannot stall silently.
+find "$state/refresh.lock" -maxdepth 0 -type d -mmin +120 -exec rmdir {} \; 2>/dev/null || true
 mkdir "$state/refresh.lock" 2>/dev/null || exit 0
 trap 'rmdir "$state/refresh.lock"' EXIT
 since=$(cat "$state/last-refresh" 2>/dev/null || date -v-3d '+%Y-%m-%d %H:%M' 2>/dev/null || date -d '3 days ago' '+%Y-%m-%d %H:%M')
