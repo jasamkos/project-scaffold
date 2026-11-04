@@ -273,6 +273,57 @@ t_gate_fail_open() {
   eq "$(gate 'git push')" ""
 }
 
+ckpt() { "$R/.scaffold/hooks/checkpoint" <<<"$(hookjson '' s1 "$BASE/t.jsonl")"; }
+commit_line() { jq -nc '{message:{content:[{type:"tool_use",name:"Bash",input:{command:"git commit -m x"}}]}}' >>"$BASE/t.jsonl"; }
+is_block() { eq "$(jq -r .decision <<<"$1" 2>/dev/null)" block; }
+t_ckpt_blocks_once() {
+  T=ckpt_blocks_once; mkrepo local; git -C "$R" switch -qc feat/a; note a feat/a
+  touch -t 202001010000 "$R/.scaffold/work/active/a.md"; touch "$R/.scaffold/.hookstate/s1.start"; commit_line
+  out=$(ckpt); is_block "$out"; eq "$(jq -r 'keys | join(",")' <<<"$out")" decision,reason
+  eq "$(ckpt)" ""
+}
+t_ckpt_note_updated() {
+  T=ckpt_note_updated; mkrepo local; git -C "$R" switch -qc feat/a
+  touch -t 202001010000 "$R/.scaffold/.hookstate/s1.start"; note a feat/a; commit_line
+  eq "$(ckpt)" ""
+}
+t_ckpt_no_work() {
+  T=ckpt_no_work; mkrepo local; touch "$R/.scaffold/.hookstate/s1.start"
+  jq -nc '{message:{content:[{type:"tool_use",name:"Bash",input:{command:"ls"}}]}}' >"$BASE/t.jsonl"
+  eq "$(ckpt)" ""
+}
+t_ckpt_base_any_note() {
+  T=ckpt_base_any_note; mkrepo local
+  note other 'jkn/x (from origin/main)'; touch -t 202001010000 "$R/.scaffold/work/active/other.md"
+  touch -t 202101010000 "$R/.scaffold/.hookstate/s1.start"; note fresh feat/z; commit_line
+  eq "$(ckpt)" ""
+}
+t_ckpt_feature_needs_own_note() {
+  T=ckpt_feature_needs_own_note; mkrepo local; git -C "$R" switch -qc feat/orphan
+  touch -t 202101010000 "$R/.scaffold/.hookstate/s1.start"; note unrelated feat/other; commit_line
+  is_block "$(ckpt)"
+}
+t_ckpt_shared_reason() {
+  T=ckpt_shared_reason; mkrepo shared; git -C "$R" switch -qc feat/a; note a feat/a
+  touch -t 202001010000 "$R/.scaffold/work/active/a.md"; touch "$R/.scaffold/.hookstate/s1.start"; commit_line
+  out=$(ckpt); is_block "$out"; has "$(jq -r .reason <<<"$out")" "team-visible"
+}
+t_ckpt_first_stop_creates_marker() {
+  T=ckpt_first_stop_creates_marker; mkrepo local; commit_line
+  eq "$(ckpt)" ""; if [ -e "$R/.scaffold/.hookstate/s1.start" ]; then ok; else bad "marker not created"; fi
+}
+t_ckpt_sanitizes_reason() {
+  T=ckpt_sanitizes_reason; mkrepo local; git -C "$R" switch -qc feat/a
+  note 'a"b' feat/a; touch -t 202001010000 "$R/.scaffold/work/active/a\"b.md"; touch "$R/.scaffold/.hookstate/s1.start"; commit_line
+  out=$(ckpt); is_block "$out"; lacks "$(jq -r .reason <<<"$out")" '"'; has "$(jq -r .reason <<<"$out")" "work/active/ab.md"
+}
+t_ckpt_fails_open() {
+  T=ckpt_fails_open; mkrepo local; touch "$R/.scaffold/.hookstate/s1.start"
+  eq "$("$R/.scaffold/hooks/checkpoint" <<<"$(hookjson '' s1 "$BASE/missing.jsonl")")" ""
+  "$R/.scaffold/hooks/checkpoint" <<<"not json" >/dev/null 2>&1; eq "$?" 0
+  eq "$("$R/.scaffold/hooks/checkpoint" <<<"not json" 2>&1)" ""
+}
+
 # --- runner ---
 for T in $(declare -F | awk '{print $3}' | grep '^t_' | grep -- "${1:-}"); do "$T"; done
 echo "pass=$pass fail=$fail"
