@@ -1,6 +1,6 @@
 # Auto-updating project scaffold — design
 
-Date: 2026-11-04. Status: approved in chat (brainstorming sections 1–3), awaiting spec review. Source skill today: `~/.claude/skills/project-scaffold-init` (docs only, no hooks, 2026-10-12). Prior art: ai_gateway's local `.scaffold/hooks/scaffold-hook.sh` + `refresh.sh`.
+Date: 2026-11-04. Status: spec approved 2026-11-04; D8 status board added after approval, awaiting confirmation. Source skill today: `~/.claude/skills/project-scaffold-init` (docs only, no hooks, 2026-10-12). Prior art: ai_gateway's local `.scaffold/hooks/scaffold-hook.sh` + `refresh.sh`.
 
 ## Goal
 
@@ -27,6 +27,7 @@ Success: every merged PR made through a Claude session shows in STATUS as soon a
 | D5 | `STATUS.md` generated from work-note headers + `gh`; uncommitted in shared mode | Hand-edited shared STATUS (certain merge conflicts) |
 | D6 | Merge state derived from `gh` by branch; nothing written after merge | Post-merge commit setting `status: done` |
 | D7 | Every hook fails open on its own error; only `gate`'s rule refuses | Fail closed (a script bug would block pushes) |
+| D8 | Optional status board: a claude.ai artifact page published once, whose data (`render` output as JSON) sessions push to the artifact database when it changes | Republishing the HTML on each change (slow, version churn); headless push (headless `claude -p` has no Artifact/ArtifactData tools) |
 
 ## Layout and ownership
 
@@ -53,6 +54,8 @@ Work note header (first four lines, unchanged from today): `status:`, `branch:` 
 4. `render` — builds `STATUS.md`: "Now" from notes not merged, "Last round" from notes whose branch PR is merged (`gh pr list --head <b> --state merged`, cached in `.hookstate/`), newest first. `gh` missing or offline → header text only, never blocks. In just-me mode, content outside `<!-- scaffold:generated -->` markers is preserved (hand-curated sections).
 5. `catchup` — optional daily job (launchd/cron), plain git + `gh`, no LLM: records merged PRs since last run that no note claims into a "Unclaimed merges" block that `render` includes.
 
+6. Status board (optional, both modes) — `render` also writes `.hookstate/board.json` (Now, Last round, unclaimed merges, note headers, generated-at, base commit). `brief` compares its hash with `.hookstate/board-pushed`; when different it prints a DO-FIRST line: ArtifactData `get` collection `board` doc `current` for its version, `set` from `board.json` with that `if_version`, then record the hash. Same pattern as today's Signal Board push. Board URL lives in `.scaffold/config` (`BOARD_URL`). The page (`templates/board/index.html`, declares the `db` capability) reads `board/current` and renders it; mobile-safe, light/dark. Shared mode: the installer owns the artifact, shares it with the org and gives teammates edit access; a session without write access gets a refusal, `brief` prints one warning and moves on (fail open). Board data contains only what is already in committed notes, so it publishes nothing new.
+
 Just-me extras, opt-in: `signal-board` (current DO-FIRST push), `haiku-refresh` (current `refresh.sh` with Jira tool name fixed and parameterised).
 
 ## Task lifecycle
@@ -72,12 +75,13 @@ Edge cases: stacked PRs / note spanning branches (`branch:` lists several); work
 2. Write docs into `.scaffold/` from templates; seed from GitHub, Jira, docs (existing Steps 2–4).
 3. Copy `templates/hooks/*` → `.scaffold/hooks/`; write `.scaffold/config`.
 4. Merge hook registration into the right settings file with `jq`; never overwrite existing hooks.
-5. Just me: offer extras. Everyone: create branch, commit setup with its own work note, open PR (outward: confirm first).
-6. Run `.scaffold/hooks/test.sh` as smoke check.
+5. Ask "Build a status board artifact that stays up to date?" (both modes). On yes: load the `artifact-design` and `artifact-capabilities` skills, publish `templates/board/index.html` with the `db` capability, write `BOARD_URL` to config, push the first `board.json`; Everyone mode: remind the user to share it with the org and grant teammates edit (sharing is done from the page's Share menu, not by the skill).
+6. Just me: offer extras. Everyone: create branch, commit setup with its own work note, open PR (outward: confirm first).
+7. Run `.scaffold/hooks/test.sh` as smoke check.
 
 ## Testing
 
-`templates/hooks/test.sh`, no framework: temp repo + bare remote, hook JSON on stdin, fake `gh` on `PATH`. Cases: `gate` denies without note, allows with note, honours `SCAFFOLD_SKIP`, ignores base-branch pushes, fails open on crash; `checkpoint` blocks once; `render` groups merged branches and survives missing `gh`; just-me markers preserve hand sections. Each rule mutation-checked (break it, test fails).
+`templates/hooks/test.sh`, no framework: temp repo + bare remote, hook JSON on stdin, fake `gh` on `PATH`. Cases: `gate` denies without note, allows with note, honours `SCAFFOLD_SKIP`, ignores base-branch pushes, fails open on crash; `checkpoint` blocks once; `render` groups merged branches and survives missing `gh`; just-me markers preserve hand sections; `render` writes `board.json` and `brief` prints the push line only when its hash changed and `BOARD_URL` is set. Board page: open it against a sample `board.json` (Rodney screenshot) at phone and desktop width. Each rule mutation-checked (break it, test fails).
 
 ## ai_gateway migration (just-me, nothing pushed)
 
@@ -89,4 +93,4 @@ Replace `.scaffold/hooks/scaffold-hook.sh` with skill hooks; keep Signal Board +
 
 ## Out of scope
 
-CI enforcement (D3); Jira in `catchup` (needs MCP or API token; stays in the `haiku-refresh` extra); multi-repo scaffolds; Launch Board automation (project-specific, stays a just-me extra if wanted later).
+CI enforcement (D3); Jira in `catchup` (needs MCP or API token; stays in the `haiku-refresh` extra); multi-repo scaffolds; Jira tickets on the status board (needs the Jira pull; ai_gateway's Launch Board keeps its own Jira-driven build); boards aggregating several repos.
