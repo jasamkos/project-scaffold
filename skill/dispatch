@@ -19,6 +19,9 @@ for r in "$top" "${common%/.git}"; do
   grep -qxF -- "$r" "$home/repos" || continue
   [ -f "$r/.scaffold/config" ] || continue
   grep -q '^SCAFFOLD_MODE=shared' "$r/.scaffold/config" && exit 0
+  # A tracked .scaffold/ means upstream code, not the user's install: never run it.
+  [ -z "$(git -C "$r" ls-files -- .scaffold 2>/dev/null | head -1)" ] || exit 0
+  [ -x "$r/.scaffold/hooks/$1" ] || exit 0
   # shellcheck disable=SC2093
   exec "$r/.scaffold/hooks/$1" <<<"$input"
 done

@@ -606,7 +606,7 @@ t_install_local_idempotent() {
   needs_skill || return 0
   T=install_local_idempotent; mkrepo local; rm -rf "$R/.scaffold"
   export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME"
-  echo '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"other-tool stop"}]}],"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"keep-me"},{"type":"command","command":"/old/.claude/scaffold/dispatch brief"}]}]}}' >"$SCAFFOLD_HOME/settings.json"
+  jq -n --arg old "\"$SCAFFOLD_HOME/scaffold/dispatch\" brief" '{hooks:{Stop:[{hooks:[{type:"command",command:"other-tool stop"}]}],SessionStart:[{matcher:"startup",hooks:[{type:"command",command:"keep-me"},{type:"command",command:$old}]}]}}' >"$SCAFFOLD_HOME/settings.json"
   "$SKILL/install.sh" --mode local --repo "$R" >/dev/null; "$SKILL/install.sh" --mode local --repo "$R" >/dev/null
   s=$SCAFFOLD_HOME/settings.json
   eq "$(jq '[.hooks.Stop[].hooks[].command] | length' "$s")" "2"
@@ -705,6 +705,73 @@ t_dispatch_gate_fast_path() {
   unset SCAFFOLD_HOME
 }
 
+t_install_settings_integrity() {
+  needs_skill || return 0
+  T=install_settings_integrity; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME"
+  echo '{"permissions":{"allow":["x"]},"hooks":{"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"fmt"}]}],"Stop":[{"hooks":[]},{"hooks":[{"type":"command","command":"/x/my-scaffold/dispatcher checkpoint"},{"type":"command","command":"/p/.scaffold/hooks/gate"}]}]}}' >"$SCAFFOLD_HOME/settings.json"
+  "$SKILL/install.sh" --mode local --repo "$R" >/dev/null; "$SKILL/install.sh" --mode local --repo "$R" >/dev/null
+  s=$SCAFFOLD_HOME/settings.json
+  eq "$(jq -c '.permissions' "$s")" '{"allow":["x"]}'
+  eq "$(jq '.hooks.PostToolUse | length' "$s")" "1"
+  eq "$(jq '[.hooks.Stop[] | select(.hooks == [])] | length' "$s")" "1"
+  has "$(jq -r '[.hooks.Stop[].hooks[].command] | join(",")' "$s")" "/x/my-scaffold/dispatcher checkpoint,/p/.scaffold/hooks/gate"
+  eq "$(jq '[.hooks.Stop[].hooks[].command | select(endswith("checkpoint"))] | length' "$s")" "2"
+  unset SCAFFOLD_HOME
+}
+t_install_validates_shape_before_writing() {
+  needs_skill || return 0
+  T=install_validates_shape_before_writing; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME"
+  for bad in '{"hooks":[]}' '{"hooks":{"Stop":"x"}}' '{"hooks":{"Stop":[{"hooks":"x"}]}}' '{"hooks":{"Stop":[1]}}'; do
+    echo "$bad" >"$SCAFFOLD_HOME/settings.json"
+    "$SKILL/install.sh" --mode local --repo "$R" --board-url https://claude.ai/artifact/B 2>/dev/null >&2; eq "$?" "2"
+    eq "$(cat "$SCAFFOLD_HOME/settings.json")" "$bad"
+    eq "$(ls -A "$SCAFFOLD_HOME")" "settings.json"
+    [ -e "$R/.scaffold" ] && bad "wrote hooks for $bad" || ok
+  done
+  unset SCAFFOLD_HOME
+}
+t_install_from_worktree_uses_main_checkout() {
+  needs_skill || return 0
+  T=install_from_worktree_uses_main_checkout; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME=$BASE/home
+  git -C "$R" worktree add -q "$BASE/wt" -b feat/w
+  "$SKILL/install.sh" --mode local --repo "$BASE/wt" >/dev/null
+  [ -f "$R/.scaffold/config" ] && ok || bad "no scaffold in main checkout"
+  [ -e "$BASE/wt/.scaffold" ] && bad "created .scaffold in worktree" || ok
+  eq "$(cat "$SCAFFOLD_HOME/scaffold/repos")" "$R"
+  unset SCAFFOLD_HOME
+}
+t_install_quotes_dispatch_path() {
+  needs_skill || return 0
+  T=install_quotes_dispatch_path; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME="$BASE/h o"
+  "$SKILL/install.sh" --mode local --repo "$R" >/dev/null
+  eq "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$SCAFFOLD_HOME/settings.json")" "\"$BASE/h o/scaffold/dispatch\" brief"
+  unset SCAFFOLD_HOME
+}
+t_dispatch_gate_multiline_and_tab_targets() {
+  needs_skill || return 0
+  T=dispatch_gate_multiline_and_tab_targets; mkrepo local
+  git -C "$R" worktree add -q "$BASE/wt" -b feat/w
+  export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME/scaffold" "$BASE/out"; cp "$HOOKS/lib.sh" "$SCAFFOLD_HOME/scaffold/"
+  echo "$R" >"$SCAFFOLD_HOME/scaffold/repos"
+  for c in $'make\ncd '"$BASE/wt"$' && git push' $'git\t-C\t'"$BASE/wt"$'\tpush'; do
+    j=$(jq -nc --arg d "$BASE/out" --arg c "$c" '{session_id:"s",cwd:$d,tool_name:"Bash",tool_input:{command:$c}}')
+    deny_has "$(PATH="$FAKEBIN:$PATH" "$SKILL/dispatch" gate <<<"$j")" "no work note lists branch feat/w"
+  done
+  unset SCAFFOLD_HOME
+}
+t_dispatch_refuses_tracked_or_nonexec_hooks() {
+  needs_skill || return 0
+  T=dispatch_refuses_tracked_or_nonexec_hooks; mkrepo local
+  export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME/scaffold"; cp "$HOOKS/lib.sh" "$SCAFFOLD_HOME/scaffold/"; echo "$R" >"$SCAFFOLD_HOME/scaffold/repos"
+  printf '#!/bin/sh\necho RAN\n' >"$R/.scaffold/hooks/brief"; chmod +x "$R/.scaffold/hooks/brief"
+  j=$(jq -nc --arg d "$R" '{session_id:"s",cwd:$d}')
+  eq "$("$SKILL/dispatch" brief <<<"$j")" "RAN"
+  chmod -x "$R/.scaffold/hooks/brief"; eq "$("$SKILL/dispatch" brief <<<"$j")" ""
+  "$SKILL/dispatch" brief <<<"$j" >/dev/null 2>&1; eq "$?" "0"
+  chmod +x "$R/.scaffold/hooks/brief"; git -C "$R" add -f .scaffold/hooks/brief
+  eq "$("$SKILL/dispatch" brief <<<"$j")" ""
+  unset SCAFFOLD_HOME
+}
 # --- runner ---
 for T in $(declare -F | awk '{print $3}' | grep '^t_' | grep -- "${1:-}"); do "$T"; done
 echo "pass=$pass fail=$fail"
