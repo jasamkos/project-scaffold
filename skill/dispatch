@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Global hook entry for just-me scaffolds (registered once in ~/.claude/settings.json): runs the checkout's
+# .scaffold/ hook, worktrees included, only for repos the user installed (registry), never because a repo ships one.
+input=$(cat)
+case ${1:-} in brief | checkpoint | gate) ;; *) exit 0 ;; esac
+home=${SCAFFOLD_HOME:-$HOME/.claude}/scaffold
+# shellcheck source=templates/hooks/lib.sh
+. "$home/lib.sh" 2>/dev/null || exit 0
+dir=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null); dir=${dir:-$PWD}
+if [ "$1" = gate ]; then
+  cmd=$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null)
+  is_push_cmd "$cmd" || exit 0  # runs before every Bash call: no git before this
+  dir=$(target_dir "$cmd" "$dir")
+fi
+[ -f "$home/repos" ] || exit 0
+top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || exit 0
+common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+for r in "$top" "${common%/.git}"; do
+  grep -qxF -- "$r" "$home/repos" || continue
+  [ -f "$r/.scaffold/config" ] || continue
+  grep -q '^SCAFFOLD_MODE=shared' "$r/.scaffold/config" && exit 0
+  # shellcheck disable=SC2093
+  exec "$r/.scaffold/hooks/$1" <<<"$input"
+done
+exit 0

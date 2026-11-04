@@ -95,6 +95,25 @@ headers_complete() {
   for k in status branch waiting-on next; do [ -n "$(header "$1" "$k")" ] || return 1; done
 }
 
+# Push / PR-create detection shared by gate and dispatch. Spawns nothing: it runs before every Bash call.
+# Lines and tabs are plain separators; lead/trail classes include quotes and backtick so `bash -c "git push"` is seen.
+_norm_cmd() { local c=${1//$'\t'/ }; echo "${c//$'\n'/;}"; }
+_kind_res() {
+  local q="'" arg
+  arg="(\"[^\"]*\"|${q}[^$q]*$q|[^ ]+)"
+  lead="(^|[;&|( \"$q\`])"; trail="([ ;&|)\"$q\`]|\$)"
+  push_re="${lead}git( -[cC] $arg)* push$trail"
+  pr_re="${lead}gh pr create$trail"
+}
+is_push_cmd() { [ -n "$(cmd_kinds "$1")" ]; }
+cmd_kinds() {
+  local c lead trail push_re pr_re k=""
+  c=$(_norm_cmd "$1"); _kind_res
+  [[ $c =~ $push_re ]] && k=push
+  [[ $c =~ $pr_re ]] && k="${k:+$k }pr"
+  echo "$k"
+}
+
 # Edits under TOPLEVEL outside .scaffold/, or a commit, push or PR command, anywhere in the transcript.
 # Output is collected before matching: an early `grep -q` exit would SIGPIPE the producers under pipefail.
 did_repo_work() {
