@@ -1,4 +1,4 @@
-# Scaffold hook settings, sourced by .scaffold/hooks/lib.sh.
+# Scaffold hook settings, read by .scaffold/hooks/lib.sh.
 SCAFFOLD_MODE=local
 BASE_BRANCH=main
 REMOTE=origin
