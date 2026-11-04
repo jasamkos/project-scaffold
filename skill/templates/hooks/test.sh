@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1091,SC2016,SC2153
+# shellcheck disable=SC1091,SC2012,SC2016,SC2153
 # Scaffold hook tests: temp repos with bare remotes, hook JSON on stdin, fake gh on PATH. Usage: test.sh [name-filter]
 set -uo pipefail
 HOOKS=$(cd "$(dirname "$0")" && pwd -P)
@@ -322,6 +322,109 @@ t_ckpt_fails_open() {
   eq "$("$R/.scaffold/hooks/checkpoint" <<<"$(hookjson '' s1 "$BASE/missing.jsonl")")" ""
   "$R/.scaffold/hooks/checkpoint" <<<"not json" >/dev/null 2>&1; eq "$?" 0
   eq "$("$R/.scaffold/hooks/checkpoint" <<<"not json" 2>&1)" ""
+}
+
+render() { PATH="$FAKEBIN:$PATH" python3 -I "$R/.scaffold/hooks/render.py" "$R" main "${MODE:-local}"; }
+expire_cache() { touch -t 202001010000 "$R/.scaffold/.hookstate/merged.json"; }
+board() { jq -r "$1" "$R/.scaffold/.hookstate/board.json"; }
+t_render_shared_uses_committed_notes() {
+  T=render_shared_uses_committed_notes; mkrepo shared; echo '[]' >"$GHOUT"
+  note published feat/p; commit_note published; note draft feat/d
+  MODE=shared render
+  eq "$(board '[.now[].task] | join(",")')" "published"
+}
+t_render_cache_fallback_keeps_history() {
+  T=render_cache_fallback_keeps_history; mkrepo local; note done-task feat/done
+  echo '[{"number":7,"title":"t","headRefName":"feat/done","mergedAt":"2026-11-03T10:00:00Z"}]' >"$GHOUT"
+  render; eq "$(board '.last_round[0].task')" "done-task"; expire_cache
+  echo '[]' >"$GHOUT"; render; eq "$(board '.last_round[0].task')" "done-task"; expire_cache
+  GH_SLEEP=5 SCAFFOLD_GH_TIMEOUT=1 render; eq "$(board '.last_round[0].task')" "done-task"; expire_cache
+  rm "$GHOUT"; render; eq "$(board '.last_round[0].task')" "done-task"
+  eq "$(jq -r '.history["feat/done"].number' "$R/.scaffold/.hookstate/merged.json")" "7"
+}
+t_render_legacy_cache_is_empty_history() {
+  T=render_legacy_cache_is_empty_history; mkrepo local; note a feat/a; echo '[]' >"$GHOUT"
+  echo '{"feat/a":{"number":3,"mergedAt":"2026-11-01T00:00:00Z"}}' >"$R/.scaffold/.hookstate/merged.json"
+  render; eq "$(board '[.now[].task] | join(",")')" "a"
+  echo 'garbage' >"$R/.scaffold/.hookstate/merged.json"; render || bad "garbled cache crashed render"
+}
+t_render_crlf_bytes() {
+  T=render_crlf_bytes; mkrepo local; note a feat/a; echo '[]' >"$GHOUT"
+  printf 'HAND\r\nTOP\r\n<!-- scaffold:generated -->\nx\n<!-- /scaffold:generated -->\r\nBOTTOM\r\n' >"$R/.scaffold/STATUS.md"
+  render
+  eq "$(head -c 11 "$R/.scaffold/STATUS.md" | od -An -c | tr -s ' ')" "$(printf 'HAND\r\nTOP\r\n' | od -An -c | tr -s ' ')"
+  eq "$(tail -c 10 "$R/.scaffold/STATUS.md" | od -An -c | tr -s ' ')" "$(printf '\r\nBOTTOM\r\n' | od -An -c | tr -s ' ')"
+}
+t_render_split() {
+  T=render_split; mkrepo local
+  note done-task 'feat/done (merged; worktree /x)'; note open-task feat/open
+  echo '[{"number":7,"title":"t","headRefName":"feat/done","mergedAt":"2026-11-03T10:00:00Z"},{"number":8,"title":"m","headRefName":"main","mergedAt":"2026-11-02T10:00:00Z"}]' >"$GHOUT"
+  note on-main 'main'
+  render
+  s=$(cat "$R/.scaffold/STATUS.md")
+  has "$s" "<!-- scaffold:generated -->"
+  has "$(board '.last_round[0].task')" "done-task"
+  eq "$(board '[.now[].task] | sort | join(",")')" "on-main,open-task"
+}
+t_render_first_token_decides() {
+  T=render_first_token_decides; mkrepo local; note stack 'feat/top feat/base'
+  echo '[{"number":9,"title":"b","headRefName":"feat/base","mergedAt":"2026-11-03T10:00:00Z"}]' >"$GHOUT"
+  render
+  eq "$(board '.now[0].task')" "stack"
+}
+t_render_preserves_hand_text() {
+  T=render_preserves_hand_text; mkrepo local; note a feat/a
+  printf '# STATUS\n\nHAND TOP\n\n<!-- scaffold:generated -->\nOLD-GENERATED-SENTINEL\n<!-- /scaffold:generated -->\n\nHAND BOTTOM\n' >"$R/.scaffold/STATUS.md"
+  render; s=$(cat "$R/.scaffold/STATUS.md")
+  has "$s" "HAND TOP"; has "$s" "HAND BOTTOM"; lacks "$s" "OLD-GENERATED-SENTINEL"; has "$s" "**a**"
+}
+t_render_status_atomic() {
+  T=render_status_atomic; mkrepo local; note a feat/a; echo '[]' >"$GHOUT"
+  printf 'HAND\n<!-- scaffold:generated -->\nOLD-GENERATED-SENTINEL\n<!-- /scaffold:generated -->\nEND\n' >"$R/.scaffold/STATUS.md"
+  i1=$(ls -i "$R/.scaffold/STATUS.md" | awk '{print $1}'); render
+  i2=$(ls -i "$R/.scaffold/STATUS.md" | awk '{print $1}')
+  if [ "$i1" != "$i2" ]; then ok; else bad "STATUS inode unchanged"; fi
+  s=$(cat "$R/.scaffold/STATUS.md"); has "$s" "HAND"; has "$s" "END"; lacks "$s" "OLD-GENERATED-SENTINEL"
+  eq "$(find "$R/.scaffold" -name 'tmp*' | wc -l | tr -d ' ')" "0"
+}
+t_render_gh_missing_and_slow() {
+  T=render_gh_missing_and_slow; mkrepo local; note a feat/a
+  render || bad "render failed without gh"
+  echo '[]' >"$GHOUT"
+  rm -f "$R/.scaffold/.hookstate/merged.json"
+  start=$(date +%s)
+  GH_SLEEP=5 SCAFFOLD_GH_TIMEOUT=1 render || bad "render failed on slow gh"
+  if [ $(( $(date +%s) - start )) -lt 4 ]; then ok; else bad "render waited for slow gh"; fi
+}
+t_render_one_deadline_for_all_gh_calls() {
+  T=render_one_deadline_for_all_gh_calls; mkrepo local; echo '[]' >"$GHOUT"
+  note a feat/a; note b feat/b; note c feat/c
+  start=$(date +%s)
+  GH_SLEEP_FROM=2 SCAFFOLD_GH_TIMEOUT=2 render || bad "render failed"
+  if [ $(( $(date +%s) - start )) -lt 4 ]; then ok; else bad "per-branch lookups outlived the shared deadline"; fi
+}
+t_render_fair_branch_lookups() {
+  T=render_fair_branch_lookups; mkrepo local; echo '[]' >"$GHOUT"
+  for i in 1 2 3 4 5 6 7 8 9 10 11; do note "n$i" "feat/b$i"; done
+  render; expire_cache; render
+  for i in 1 2 3 4 5 6 7 8 9 10 11; do has "$(grep -e '--head' "$BASE/gh.calls")" "--head feat/b$i "; done
+}
+t_render_cache_follows_base_commit() {
+  T=render_cache_follows_base_commit; mkrepo local; note a feat/a; echo '[]' >"$GHOUT"
+  render; eq "$(board '[.now[].task] | join(",")')" "a"
+  echo y >"$R/y"; git -C "$R" add y; git -C "$R" commit -qm y
+  echo '[{"number":5,"title":"t","headRefName":"feat/a","mergedAt":"2026-11-04T10:00:00Z"}]' >"$GHOUT"
+  render; eq "$(board '.last_round[0].task')" "a"
+}
+t_render_cache_fresh_skips_gh() {
+  T=render_cache_fresh_skips_gh; mkrepo local; note a feat/a; echo '[]' >"$GHOUT"
+  render; n1=$(wc -l <"$BASE/gh.calls"); render
+  eq "$(wc -l <"$BASE/gh.calls")" "$n1"
+}
+t_render_hash_stable() {
+  T=render_hash_stable; mkrepo local; note a feat/a; echo '[]' >"$GHOUT"
+  render; h1=$(cat "$R/.scaffold/.hookstate/board.hash"); sleep 1; render
+  eq "$(cat "$R/.scaffold/.hookstate/board.hash")" "$h1"
 }
 
 # --- runner ---
