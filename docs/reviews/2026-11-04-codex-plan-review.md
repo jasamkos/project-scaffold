@@ -27,3 +27,7 @@
 | 21 | P2 | plist template can't lint | Lint a substituted copy (Task 10); migration lints before swap |
 | 22 | P2 | No viewport in local phone check | Local preview wraps page in the publish skeleton; asserts `innerWidth == 390` (Task 9) |
 | 23 | P2 | No pull-time render | Spec success line narrowed to "next session start or manual render" |
+
+# Round 2 (2026-11-04, `184d8bf`)
+
+18 findings (3 P1, 15 P2), all accepted; each became a binding "Round-2 amendments" block in its task (Tasks 1, 2, 3, 5, 6, 7, 8, 10, 11, 12) plus a spec section. P1: committed `EXTRA_PUSH` could upload secrets → push destinations user-owned (`~/.claude/scaffold/pushes`); inbox/note filenames could inject instructions → `safe_text` + inbox inside the data block; `dispatch` checked the session cwd, not the command target → resolve target before registry lookup. P2: atomic STATUS write, one gh deadline, fair branch lookups, base-keyed cache freshness, quote-aware target parsing, HEAD-only shared discovery, compound push+PR stamps, migration jq keeps siblings, refresh never prepends PATH (real `claude` risk), committed-unchanged-note test, per-scenario cache assertions, independent source-checkout marker, unique sentinel, shellcheck source resolution, real catchup pagination.

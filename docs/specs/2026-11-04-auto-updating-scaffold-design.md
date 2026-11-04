@@ -107,6 +107,12 @@ Security and correctness refinements from Codex review of the plan (2026-11-04, 
 - `gate` resolves the repo a command targets (`git -C`, leading `cd … &&`), fails open on git errors, and keeps separate push and PR stamps in just-me mode.
 - Merge history is a union cache plus per-branch lookups for unresolved notes, so old merges never fall back to "Now".
 
+Round 2 (2026-11-04, 18 findings), changes to the design:
+
+- Push destinations (`BOARD_URL`, extra pushes) live in the user-owned `~/.claude/scaffold/pushes`, never in committed config: a contributor-written `EXTRA_PUSH` could otherwise make a session upload a secret file. Consequence for D8: in everyone mode only sessions of users who registered the board (`install.sh --register-board`) push it; the installer does at install.
+- Contributor-controlled names (note and inbox filenames, branch names) are sanitised before they reach session context; inbox names print inside the data block.
+- `dispatch` resolves a gated command's target repo before the registry lookup; `merged.json` freshness is keyed to the base commit; `gh` calls share one deadline; per-branch lookups rotate fairly; STATUS and state files are replaced atomically.
+
 ## Out of scope
 
 CI enforcement (D3); Jira in `catchup` (needs MCP or API token; stays in the `haiku-refresh` extra); multi-repo scaffolds; Jira tickets on the status board (needs the Jira pull; ai_gateway's Launch Board keeps its own Jira-driven build); boards aggregating several repos.
