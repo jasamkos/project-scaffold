@@ -1,6 +1,6 @@
 # project-scaffold
 
-A Claude Code skill, `project-scaffold-init`, that gives a repository a `.scaffold/` context layer and installs hooks that keep it current as work happens. A new session reads a short, sourced summary of the project and of every task in flight, instead of re-reading PRs, tickets and docs. The session that does the work updates the scaffold, so status never lags behind the code.
+A Claude Code skill, `project-scaffold-init`, that gives a repository a `.scaffold/` context layer and installs hooks that keep it current as work happens. A new session reads a short, sourced summary of the project and of every task in flight, instead of re-reading PRs, tickets and docs. The session that does the work updates the task's note before it may finish or push; STATUS.md and the board are regenerated from the notes at the next session start.
 
 Design and rationale: `docs/specs/2026-11-04-auto-updating-scaffold-design.md`. Implementation plan: `docs/plans/2026-11-04-auto-updating-scaffold.md`.
 
@@ -53,12 +53,12 @@ Three Claude Code hooks do the enforcement. There is no CI component: the hooks 
 STATUS.md is built by `render.py`:
 
 - **Now**: active and queued notes whose branch is not merged, or still has an open PR.
-- **Last round**: notes whose branch merged, plus completed notes, newest first.
-- **Merged without a work note**: recent merges no note claims, so unrecorded work is visible.
+- **Last round**: notes (active, queued or completed) whose branch has a known merge, newest first. A completed note with no merge in GitHub history appears in neither section.
+- **Merged without a work note**: merges no note claims, as recorded by the optional `catchup` job (just-me only); without it this section stays empty.
 
 Merge state comes from `gh` (cached per base commit, bounded by a deadline). The generated block sits between `<!-- scaffold:generated -->` markers; anything written outside them survives regeneration.
 
-`catchup.py` is an optional non-LLM backstop. It lists merged PRs since its last run (one query per UTC day, split into hourly windows on busy days) so merges made outside a scaffolded session still appear.
+`catchup.py` is an optional non-LLM backstop for just-me scaffolds. It lists merged PRs since its last run (one query per UTC day, split into hourly windows on busy days) so merges made outside a scaffolded session still appear.
 
 Hooks fail open: a missing tool, a git error or a malformed file means the hook does nothing rather than blocking work. Escape hatch for a one-off push: prefix the command with `SCAFFOLD_SKIP=1`.
 
@@ -78,11 +78,11 @@ The effective mode is whether `.scaffold/config` is tracked in git, not what the
 
 **Extra pushes (just me).** Push any scaffold file to another artifact database at session start, for example a personal dashboard inbox: `--extra-push 'https://claude.ai/artifact/…|collection|doc_id|/abs/file'`.
 
-**Daily jobs (just me, macOS launchd).** `catchup` records merges nobody claimed. `haiku-refresh` gathers git/GitHub facts in shell, then runs headless Haiku (`claude -p --setting-sources user`, read-only tools, Jira search allowed) to add ticket changes, and writes `inbox/<date>-refresh.md` for the next interactive session to verify and apply. Jobs run user-owned copies under `~/.claude/scaffold/jobs/<job>/`, so a `git pull` can never change the code launchd executes, and they do nothing for a registered repo whose scaffold has become tracked.
+**Daily jobs (just me, macOS launchd).** `catchup` records merges nobody claimed. `haiku-refresh` gathers git/GitHub facts in shell, then runs headless Haiku (`claude -p --setting-sources user`, built-in tools limited to `Read` and `ToolSearch`, Jira search allowed; MCP tools already approved in your user settings stay callable) to add ticket changes, and writes `inbox/<date>-refresh.md` for the next interactive session to verify and apply. Jobs run user-owned copies under `~/.claude/scaffold/jobs/<job>/`, so a `git pull` can never change the code launchd executes, and they do nothing for a registered repo whose scaffold has become tracked.
 
 ## Trust model
 
-Scaffold content is written by contributors, and in shared mode by anyone who can open a PR, so it is treated as data:
+Scaffold content is written by contributors, and in shared mode by anyone who can open a PR, so notes and config are treated as data. The hooks themselves are code: in shared mode `.scaffold/hooks/` and `.claude/settings.json` come from the repo, so review PRs that touch them like any other code before running a session on that checkout. The guarantees below cover data files only.
 
 - `.scaffold/config` is parsed as fixed keys with validated values; unknown keys are ignored and it is never sourced.
 - Destinations (board, extra pushes) come only from `~/.claude/scaffold/pushes`, written by installer flags.
