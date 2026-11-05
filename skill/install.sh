@@ -4,6 +4,8 @@
 #        install.sh --register-board URL --repo DIR   (pushes line only: no hooks)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=templates/hooks/lib.sh
+. "$here/templates/hooks/lib.sh"  # scaffold_root, effective_mode
 mode="" repo="" board="" register="" extras=""
 while [ $# -gt 0 ]; do
   case $1 in -h | --help) sed -n '3,4p' "$0" | cut -c3-; exit 0 ;; esac
@@ -25,26 +27,36 @@ home=${SCAFFOLD_HOME:-$HOME/.claude}
 pushes=$home/scaffold/pushes
 board_re='^https://claude\.ai/[A-Za-z0-9/_-]+$'
 extra_re='^https://claude\.ai/[^|]+\|[A-Za-z0-9_-]+\|[A-Za-z0-9_-]+\|/[^|]+$'  # same shapes as lib.sh load_pushes
+hook_files="lib.sh brief checkpoint gate render.py catchup.py test.sh"
 
+# The last stdout line is always root=<abs>: the skill uses it for every later step.
 main() {
-  local e settings
+  local e settings existing dir=$repo
   [ -n "$repo" ] || die "--repo is required"
-  repo=$(resolve_root "$repo") || die "not a git repository: $repo"
-  case $repo in *'|'* | *$'\n'*) die "repo path must not contain | or newline" ;; esac
   if [ -n "$register" ]; then
     [ -z "$mode$board$extras" ] || die "--register-board takes only --repo"
     valid_board "$register"
+    # Keyed by the root brief resolves for this checkout, so take it from the existing scaffold.
+    repo=$(scaffold_root "$dir") || die "no scaffold serves $dir: install it (or pull the team's) first"
+    check_repo_path
+    refuse_symlinks "$home/scaffold" "$pushes"
     put_push "$repo" board "$register"
-    echo "registered board for $repo"
+    echo "registered board for $repo"; echo "root=$repo"
     return 0
   fi
   case $mode in local | shared) ;; *) die "--mode local|shared is required" ;; esac
+  repo=$(resolve_root "$dir") || die "not a git repository: $dir"
+  check_repo_path
+  if existing=$(scaffold_root "$dir"); then
+    [ "$(installed_mode "$existing")" = "$mode" ] || refuse_mode_change "$existing"
+  fi
   [ -z "$board" ] || valid_board "$board"
   while IFS= read -r e; do
     [ -z "$e" ] || { [[ $e =~ $extra_re ]] || die "invalid --extra-push: $e"; }
   done <<<"$extras"
   if [ "$mode" = local ]; then settings=${SCAFFOLD_SETTINGS:-$home/settings.json}; else settings=$repo/.claude/settings.json; fi
   check_settings "$settings"
+  refuse_install_symlinks
   install_hooks
   [ -z "$board" ] || put_push "$repo" board "$board"
   while IFS= read -r e; do [ -z "$e" ] || put_push "$repo" extra "$e"; done <<<"$extras"
@@ -61,7 +73,40 @@ main() {
     # shellcheck disable=SC2016  # literal $CLAUDE_PROJECT_DIR, expanded by Claude Code
     merge_settings "$settings" '"$CLAUDE_PROJECT_DIR"/.scaffold/hooks/'
   fi
-  echo "installed $mode scaffold hooks in $repo"
+  echo "installed $mode scaffold hooks in $repo"; echo "root=$repo"
+}
+
+check_repo_path() { case $repo in *'|'* | *$'\n'*) die "repo path must not contain | or newline" ;; esac; }
+
+# A tracked config is everyone mode whatever it says; an untracked one keeps the mode this installer wrote.
+installed_mode() {
+  if [ "$(effective_mode "$1")" = shared ] || grep -qx 'SCAFFOLD_MODE=shared' "$1/.scaffold/config"; then echo shared; else echo local; fi
+}
+
+refuse_mode_change() {
+  if [ "$mode" = shared ]; then
+    die "$1 has a just-me (local) scaffold; --mode shared needs a manual migration first: remove /.scaffold/ and /CLAUDE.local.md from $(git -C "$1" rev-parse --path-format=absolute --git-common-dir)/info/exclude and $1 from $home/scaffold/repos, set SCAFFOLD_MODE=shared in $1/.scaffold/config, then rerun"
+  fi
+  die "$1 has an everyone (shared) scaffold; --mode local needs a manual migration first: untrack it (git rm -r --cached .scaffold, drop its hooks from .claude/settings.json, commit), set SCAFFOLD_MODE=local in $1/.scaffold/config, then rerun"
+}
+
+# cp and mkdir -p follow symlinks, and a checkout may ship one pointing anywhere: refuse before the first write
+# if any path this run may write is a link. Repo-side parents are listed too, so the chain under the root is covered.
+refuse_install_symlinks() {
+  local sc=$repo/.scaffold f p common
+  local paths=("$sc" "$sc/hooks" "$sc/config" "$sc/work" "$sc/work/active" "$sc/work/queued" "$sc/work/completed" "$sc/inbox" "$sc/.hookstate" "$home/scaffold" "$pushes")
+  for f in $hook_files; do paths+=("$sc/hooks/$f"); done
+  if [ "$mode" = local ]; then
+    common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+    paths+=("$common/info" "$common/info/exclude" "$home/scaffold/dispatch" "$home/scaffold/lib.sh" "$home/scaffold/repos")
+  else
+    paths+=("$repo/.claude" "$repo/.claude/settings.json" "$repo/.gitignore")
+  fi
+  refuse_symlinks "${paths[@]}"
+}
+refuse_symlinks() {
+  local p
+  for p in "$@"; do [ ! -L "$p" ] || die "refusing to write through symlink $p"; done
 }
 
 # Local scaffolds are untracked and live in the main checkout, never in a linked worktree.
@@ -86,7 +131,7 @@ valid_board() { [[ $1 =~ $board_re ]] || die "invalid board URL: $1"; }
 install_hooks() {
   local sc=$repo/.scaffold f exclude
   mkdir -p "$sc/hooks" "$sc/work/active" "$sc/work/queued" "$sc/work/completed" "$sc/inbox" "$sc/.hookstate"
-  for f in lib.sh brief checkpoint gate render.py catchup.py test.sh; do cp "$here/templates/hooks/$f" "$sc/hooks/"; done
+  for f in $hook_files; do cp "$here/templates/hooks/$f" "$sc/hooks/"; done
   chmod +x "$sc/hooks/brief" "$sc/hooks/checkpoint" "$sc/hooks/gate" "$sc/hooks/render.py" "$sc/hooks/catchup.py" "$sc/hooks/test.sh"
   [ -f "$sc/config" ] || cp "$here/templates/hooks/config.default" "$sc/config"
   set_key "$sc/config" SCAFFOLD_MODE "$mode"

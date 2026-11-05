@@ -37,9 +37,11 @@ main() {
 
 # Values come from the user-owned pushes file and $STATE only, never from the repo.
 push_lines() {
-  local i=0 url coll doc file
-  if [ -n "$BOARD_URL" ] && [ -f "$STATE/board.hash" ] && ! cmp -s "$STATE/board.hash" "$STATE/board-pushed"; then
-    echo "- DO FIRST, no need to ask (board opted in at install): push scaffold board data. ArtifactData get (url $BOARD_URL, collection board, doc_id current) for its version (absent on first push), then set with file_path $STATE/board.json and that if_version; on success run \`cp $STATE/board.hash $STATE/board-pushed\`. On a permission refusal say so in one line and continue."
+  local i=0 url coll doc file h=""
+  # Push and ack the immutable snapshot render wrote for this hash, never the shared board.json/board.hash.
+  [ -f "$STATE/board.hash" ] && h=$(tr -cd '0-9a-f' <"$STATE/board.hash")
+  if [ -n "$BOARD_URL" ] && [ -n "$h" ] && [ -f "$STATE/board-push-$h.json" ] && [ "$(cat "$STATE/board-pushed" 2>/dev/null)" != "$h" ]; then
+    echo "- DO FIRST, no need to ask (board opted in at install): push scaffold board data. ArtifactData get (url $BOARD_URL, collection board, doc_id current) for its version (absent on first push), then set with file_path $STATE/board-push-$h.json and that if_version; on success run \`echo $h > \"$STATE/board-pushed\"\`. On a permission refusal say so in one line and continue."
   fi
   while IFS='|' read -r url coll doc file; do
     [ -n "$url" ] || continue

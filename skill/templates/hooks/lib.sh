@@ -25,9 +25,13 @@ load_config() {
       BASE_BRANCH | REMOTE | JIRA_PROJECT | JIRA_TOOL) [[ $value =~ ^[A-Za-z0-9._/-]+$ ]] && printf -v "$key" '%s' "$value" ;;
     esac
   done < <(grep -E '^[A-Z_]+=' "$1/.scaffold/config" 2>/dev/null)
+  SCAFFOLD_MODE=$(effective_mode "$1")  # the key above is contributor-controlled; it must not pick the reader
   SC=$1/.scaffold STATE=$1/.scaffold/.hookstate
   export SCAFFOLD_MODE BASE_BRANCH REMOTE BOARD_URL JIRA_PROJECT JIRA_TOOL EXTRA_PUSHES SC STATE
 }
+
+# Everyone mode iff the config is tracked: only then do notes reach teammates, so only then read HEAD.
+effective_mode() { if git -C "$1" ls-files --error-unmatch .scaffold/config >/dev/null 2>&1; then echo shared; else echo local; fi; }
 
 # Push destinations live in a user-owned file, never in the repo: <root>|board|<url> or <root>|extra|<url>|<collection>|<doc>|<file>.
 load_pushes() {
@@ -68,22 +72,30 @@ notes_for_branch() {
 }
 
 # Everyone mode: repo-relative path of the first committed (HEAD) active/queued note listing branch $2 in repo $1.
+# NUL-delimited, as core.quotePath quotes non-ASCII names. Any git failure returns 2: callers must not decide on it.
 committed_note_for_branch() {
-  local p
-  while IFS= read -r p; do
-    case $p in *.md) ;; *) continue ;; esac
-    git -C "$1" show "HEAD:$p" 2>/dev/null | header /dev/stdin branch | branch_tokens | grep -qxF -- "$2" && { echo "$p"; return 0; }
-  done < <(git -C "$1" ls-tree -r --name-only HEAD -- .scaffold/work/active .scaffold/work/queued 2>/dev/null)
-  return 0
+  ( set -o pipefail
+    git -C "$1" ls-tree -r -z --name-only HEAD -- .scaffold/work/active .scaffold/work/queued 2>/dev/null | {
+      found=""
+      while IFS= read -r -d '' p; do
+        case $p in *.md) ;; *) continue ;; esac
+        [ -z "$found" ] || continue  # keep draining: an early exit would SIGPIPE ls-tree into a false failure
+        c=$(git -C "$1" show "HEAD:$p" 2>/dev/null) || exit 2
+        header /dev/stdin branch <<<"$c" | branch_tokens | grep -qxF -- "$2" && { echo "$p"; found=1; }
+      done
+      exit 0
+    } ) || return 2
 }
 
-# Repo a gated command acts on: `git -C <dir> … push` or a leading `cd <dir> &&` (dir bare, "…" or '…'), else the hook cwd ($2).
-# Lowercase `-c k=v` options are skipped, never taken as a dir.
+# Git global options accepted before the subcommand, -C excluded (matched where its dir matters). Unquoted args only.
+_GOPT="( -c [^ ;&|()]+| -P| --no-pager| --paginate| --bare| --exec-path[^ ;&|()]*| --git-dir=[^ ;&|()]+| --work-tree=[^ ;&|()]+)"
+
+# Repo a gated command acts on: `git … -C <dir> … push` or a leading `cd <dir> &&` (dir bare, "…" or '…'), else the hook cwd ($2).
 target_dir() {
   local d="" q="'" cmd
   cmd=$(_norm_cmd "$1")
-  local dir_re="(\"[^\"]+\"|${q}[^$q]+$q|[^ ;&]+)"
-  if [[ $cmd =~ git\ (-c\ [^\ ]+\ )*-C\ ${dir_re}\ .*push ]]; then d=${BASH_REMATCH[2]}
+  local dir_re="(\"[^\"]+\"|${q}[^$q]+$q|[^ ;&|()]+)"
+  if [[ $cmd =~ git${_GOPT}*\ -C\ ${dir_re}${_GOPT}*\ push ]]; then d=${BASH_REMATCH[2]}
   elif [[ $cmd =~ (^|;)[[:space:]]*cd\ ${dir_re}[[:space:]]*\&\& ]]; then d=${BASH_REMATCH[2]}; fi
   case $d in \"*\" | "$q"*"$q") d=${d#?}; d=${d%?} ;; esac
   case $d in "") echo "$2"; return 0 ;; /*) ;; *) d=$2/$d ;; esac
@@ -97,19 +109,37 @@ headers_complete() {
 }
 
 # Push / PR-create detection shared by gate and dispatch. Spawns nothing: it runs before every Bash call.
-# Lines and tabs are plain separators; lead/trail classes include quotes and backtick so `bash -c "git push"` is seen.
-_norm_cmd() { local c=${1//$'\t'/ }; echo "${c//$'\n'/;}"; }
+# Newlines separate commands; tab/CR/space runs are one space.
+_norm_cmd() {
+  local c=${1//$'\n'/;}
+  c=${c//$'\t'/ }; c=${c//$'\r'/ }
+  while [[ $c == *'  '* ]]; do c=${c//  / }; done
+  printf '%s\n' "$c"
+}
+# Quoted text is an argument (blanked to Q) unless it is the script of `bash|sh|zsh -…c` or `eval`, which is opened up.
+_exec_text() {
+  local c out="" pre q rest body qre="^([^\"']*)([\"'])(.*)$"
+  c=$(_norm_cmd "$1")
+  while [[ $c =~ $qre ]]; do
+    pre=${BASH_REMATCH[1]} q=${BASH_REMATCH[2]} rest=${BASH_REMATCH[3]}
+    if [[ $rest == *"$q"* ]]; then body=${rest%%"$q"*} rest=${rest#*"$q"}; else body=$rest rest=""; fi
+    if [[ $pre =~ (^|[^A-Za-z0-9_.-])((ba|z)?sh -[a-z]*c|eval)\ ?$ ]]; then out+="$pre;" c="$body;$rest"
+    else out+="${pre}Q" c=$rest; fi
+  done
+  printf '%s\n' "$out$c"
+}
+# Command position: start or after ; & | ( $( backtick, then assignments or wrapper words (FOO=1, env, sudo, then …).
 _kind_res() {
-  local q="'" arg
-  arg="(\"[^\"]*\"|${q}[^$q]*$q|[^ ]+)"
-  lead="(^|[;&|( \"$q\`])"; trail="([ ;&|)\"$q\`]|\$)"
-  push_re="${lead}git( -[cC] $arg)* push$trail"
-  pr_re="${lead}gh pr create$trail"
+  local a="[^ ;&|()\`]+"
+  local pos="(^|[;&|(\`]) ?(([A-Za-z_][A-Za-z0-9_]*=[^ ;&|()\`]* )|((env|command|exec|time|nohup|sudo|then|do|else|if|while|until|!|[{]) ))*"
+  trail="([ ;&|)\`]|\$)"
+  push_re="${pos}git(${_GOPT}| -C $a)* push$trail"
+  pr_re="${pos}gh(( -R| --repo) $a| --repo=$a)* pr create$trail"
 }
 is_push_cmd() { [ -n "$(cmd_kinds "$1")" ]; }
 cmd_kinds() {
-  local c lead trail push_re pr_re k=""
-  c=$(_norm_cmd "$1"); _kind_res
+  local c trail push_re pr_re k=""
+  c=$(_exec_text "$1"); _kind_res
   [[ $c =~ $push_re ]] && k=push
   [[ $c =~ $pr_re ]] && k="${k:+$k }pr"
   echo "$k"

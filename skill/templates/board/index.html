@@ -39,7 +39,7 @@ function fill(id, rows, toItem, emptyText) {
   rows.forEach(r => ul.append(toItem(r ?? {})));
 }
 function render(b) {
-  if (!b || typeof b !== "object") { meta("No board data yet: the next Claude session in this repo pushes it."); return; }
+  if (!b || typeof b !== "object") { clearAll(); meta("No board data yet: the next Claude session in this repo pushes it."); return; }
   meta(`Updated ${S(b.generated_at, "?")} · ${S(b.base?.branch, "?")} @ ${S(b.base?.commit, "?")}`);
   fill("now", b.now, n => item(n.task, `${S(n.status, "-")} · waiting: ${S(n.waiting_on, "-")} · next: ${S(n.next, "-")} · ${S(n.branch)}`), "No work in progress.");
   fill("last", b.last_round, n => item(n.task, `${n.pr == null || n.pr === "" ? "" : "#" + S(n.pr) + " "}merged ${S(n.merged_at)} · ${S(n.status)}`), "Nothing merged yet.");

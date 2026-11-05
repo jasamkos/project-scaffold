@@ -10,7 +10,7 @@ eq() { if [ "$1" = "$2" ]; then ok; else bad "expected [$2] got [$1]"; fi; }
 has() { if grep -qF -- "$2" <<<"$1"; then ok; else bad "missing [$2] in [$1]"; fi; }
 lacks() { if grep -qF -- "$2" <<<"$1"; then bad "unexpected [$2] in [$1]"; else ok; fi; }
 
-mkrepo() {  # $1 mode -> R repo, BASE temp dir, FAKEBIN dir first on PATH for hooks, GHOUT fake gh output
+mkrepo() {  # $1 local|shared|none (no .scaffold/) -> R repo, BASE temp dir, FAKEBIN dir first on PATH for hooks, GHOUT fake gh output
   # pwd -P: macOS mktemp paths sit under the /var symlink, while git reports the resolved /private/var path.
   BASE=$(mktemp -d) || { echo "mktemp failed" >&2; exit 1; }; BASE=$(cd "$BASE" && pwd -P); R=$BASE/repo; FAKEBIN=$BASE/bin; GHOUT=$BASE/gh.out
   git init -q --bare "$BASE/remote.git"
@@ -18,9 +18,13 @@ mkrepo() {  # $1 mode -> R repo, BASE temp dir, FAKEBIN dir first on PATH for ho
   git -C "$R" config user.email t@example.com; git -C "$R" config user.name t; git -C "$R" config commit.gpgsign false
   git -C "$R" remote add origin "$BASE/remote.git"
   echo x >"$R/README"; git -C "$R" add README; git -C "$R" commit -qm init; git -C "$R" push -q origin main
-  mkdir -p "$R/.scaffold/hooks" "$R/.scaffold/work/active" "$R/.scaffold/work/queued" "$R/.scaffold/work/completed" "$R/.scaffold/.hookstate" "$R/.scaffold/inbox"
-  for f in lib.sh brief checkpoint gate render.py catchup.py; do [ -f "$HOOKS/$f" ] && cp "$HOOKS/$f" "$R/.scaffold/hooks/"; done
-  printf 'SCAFFOLD_MODE=%s\nBASE_BRANCH=main\nREMOTE=origin\nBOARD_URL=\n' "${1:-local}" >"$R/.scaffold/config"
+  if [ "${1:-local}" != none ]; then
+    mkdir -p "$R/.scaffold/hooks" "$R/.scaffold/work/active" "$R/.scaffold/work/queued" "$R/.scaffold/work/completed" "$R/.scaffold/.hookstate" "$R/.scaffold/inbox"
+    for f in lib.sh brief checkpoint gate render.py catchup.py; do [ -f "$HOOKS/$f" ] && cp "$HOOKS/$f" "$R/.scaffold/hooks/"; done
+    printf 'SCAFFOLD_MODE=%s\nBASE_BRANCH=main\nREMOTE=origin\nBOARD_URL=\n' "${1:-local}" >"$R/.scaffold/config"
+  fi
+  # Everyone mode is a tracked config (effective_mode), not the SCAFFOLD_MODE value.
+  if [ "${1:-local}" = shared ]; then git -C "$R" add -f .scaffold/config; git -C "$R" commit -qm scaffold; git -C "$R" push -q origin main; fi
   mkdir -p "$FAKEBIN"
   # Sequenced fake gh: logs argv to gh.calls, prints $GHOUT.<n> if present else $GHOUT. GH_SLEEP sleeps every call, GH_SLEEP_FROM=<k> only calls >= k.
   # exec so a timeout kill reaches the sleeping process; a child sleep would hold the stdout pipe open.
@@ -168,6 +172,46 @@ t_lib_target_dir() {
   eq "$(target_dir "git -c k=v -C $X/y push" /c)" "$X/y"
   eq "$(target_dir 'git -c k=v push' /c)" "/c"
   eq "$(target_dir 'cd ~/nonexistent-xyz && git push' /c)" "/c"
+  eq "$(target_dir "git --no-pager -C $X/y push" /c)" "$X/y"
+  eq "$(target_dir "git  -C  $X/y  push" /c)" "$X/y"
+  eq "$(target_dir "git -C $X/y --no-pager -c a=b push" /c)" "$X/y"
+  eq "$(target_dir "git -P --git-dir=$X/y/.git -C $X/y push" /c)" "$X/y"
+}
+t_gate_command_forms() {
+  T=gate_command_forms; mkrepo local; git -C "$R" switch -qc feat/a
+  for c in 'git  push' $'git \t push' 'git --no-pager push' 'git -P push' 'git --paginate -c a=b push' 'git --git-dir=.git --work-tree=. push' \
+    'git --bare push' 'git --exec-path=/x push' 'gh -R owner/repo pr create' 'gh --repo owner/repo pr  create --fill' \
+    'eval "git push"' 'bash -lc "make && git push"' "zsh -c 'gh pr create'" 'FOO=1 git push' 'make || git push' 'echo $(git push)'; do
+    T="gate_command_forms [$c]"; deny_has "$(gate "$c")" "no work note lists branch feat/a"
+  done
+  for c in 'echo "git push"' "grep 'git push' docs" 'git commit -m "then; git push"' "echo 'gh pr create'" 'rg -n "git --no-pager push" .' 'echo "a" git push'; do
+    T="gate_command_forms [$c]"; eq "$(gate "$c")" ""
+  done
+}
+t_tracked_config_is_shared() {
+  T=tracked_config_is_shared; mkrepo shared; echo '[]' >"$GHOUT"
+  printf 'SCAFFOLD_MODE=local\nBASE_BRANCH=main\n' >"$R/.scaffold/config"; git -C "$R" commit -qam claim-local
+  . "$R/.scaffold/hooks/lib.sh"; eq "$(effective_mode "$R")" shared
+  git -C "$R" switch -qc feat/p; note published feat/p; commit_note published; note draft feat/d
+  SCAFFOLD_HOME=$BASE/home PATH="$FAKEBIN:$PATH" "$R/.scaffold/hooks/brief" <<<"$(hookjson '')" >/dev/null
+  eq "$(board '[.now[].task] | join(",")')" "published"
+  git -C "$R" switch -qc feat/d
+  deny_has "$(gate 'git push')" "not committed"
+  mkrepo local; printf 'SCAFFOLD_MODE=shared\n' >"$R/.scaffold/config"; . "$R/.scaffold/hooks/lib.sh"; eq "$(effective_mode "$R")" local
+}
+t_gate_shared_non_ascii_note() {
+  T=gate_shared_non_ascii_note; mkrepo shared; git -C "$R" switch -qc feat/u
+  printf 'status: s\nbranch: feat/u\nwaiting-on: n\nnext: x\n' >"$R/.scaffold/work/active/ä.md"
+  git -C "$R" add -f ".scaffold/work/active/ä.md"; git -C "$R" commit -qm u
+  eq "$(gate 'git push')" ""
+}
+t_gate_shared_git_failure_fails_open() {
+  T=gate_shared_git_failure_fails_open; mkrepo shared; git -C "$R" switch -qc feat/a; note a feat/a; commit_note a
+  printf '#!/bin/sh\ncase "$*" in *ls-tree*) exit 128 ;; esac\nexec /usr/bin/git "$@"\n' >"$FAKEBIN/git"; chmod +x "$FAKEBIN/git"
+  eq "$(gate 'git push')" ""
+  . "$R/.scaffold/hooks/lib.sh"; PATH="$FAKEBIN:$PATH" committed_note_for_branch "$R" feat/a >/dev/null; eq "$?" 2
+  printf '#!/bin/sh\ncase "$*" in *show*) exit 128 ;; esac\nexec /usr/bin/git "$@"\n' >"$FAKEBIN/git"
+  eq "$(gate 'git push')" ""
 }
 t_gate_targets_command_repo() {
   T=gate_targets_command_repo; mkrepo local
@@ -560,6 +604,23 @@ t_brief_board_line() {
   cp "$R/.scaffold/.hookstate/board.hash" "$R/.scaffold/.hookstate/board-pushed"
   lacks "$(brief)" "push scaffold board data"
 }
+# Each brief names an immutable per-hash snapshot and acks that hash, so a concurrent rebuild cannot be acked unsent.
+t_brief_board_acks_pushed_snapshot() {
+  T=brief_board_acks_pushed_snapshot; mkrepo local; echo '[]' >"$GHOUT"; note a feat/a
+  pushes "$R|board|https://claude.ai/artifact/X"; S=$R/.scaffold/.hookstate
+  outA=$(brief); hA=$(cat "$S/board.hash")
+  has "$outA" "file_path $S/board-push-$hA.json"
+  has "$outA" "echo $hA > \"$S/board-pushed\""
+  eq "$(jq -S 'del(.generated_at)' "$S/board-push-$hA.json")" "$(jq -S 'del(.generated_at)' "$S/board.json")"
+  note b feat/b; brief >/dev/null; hB=$(cat "$S/board.hash")
+  [ "$hA" != "$hB" ] && ok || bad "board hash did not change"
+  echo "$hA" >"$S/board-pushed"  # session A acks what it uploaded, after B rebuilt
+  has "$(brief)" "board-push-$hB.json"
+  [ -f "$S/board-push-$hA.json" ] && ok || bad "snapshot A removed while within the newest 3"
+  for t in c d e f; do note "$t" "feat/$t"; brief >/dev/null; done
+  n=0; for f in "$S"/board-push-*.json; do [ -e "$f" ] && n=$((n + 1)); done; eq "$n" 3
+  [ -f "$S/board-push-$(cat "$S/board.hash").json" ] && ok || bad "current snapshot pruned"
+}
 t_brief_config_push_keys_ignored() {
   T=brief_config_push_keys_ignored; mkrepo local; echo '[]' >"$GHOUT"; note a feat/a
   echo '{}' >"$BASE/dash.json"
@@ -621,10 +682,12 @@ t_lib_push_detect() {
   eq "$(cmd_kinds 'npm test')" ""
   is_push_cmd 'bash -c "git -C /x push"' && ok || bad "quoted push missed"
   is_push_cmd 'echo gitpush' && bad "false positive" || ok
+  eq "$(cmd_kinds 'gh -R o/r pr create && git --no-pager push')" "push pr"
+  eq "$(cmd_kinds 'echo "git push; gh pr create"')" ""
 }
 t_install_local_idempotent() {
   needs_skill || return 0
-  T=install_local_idempotent; mkrepo local; rm -rf "$R/.scaffold"
+  T=install_local_idempotent; mkrepo none
   export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME"
   jq -n --arg old "\"$SCAFFOLD_HOME/scaffold/dispatch\" brief" '{hooks:{Stop:[{hooks:[{type:"command",command:"other-tool stop"}]}],SessionStart:[{matcher:"startup",hooks:[{type:"command",command:"keep-me"},{type:"command",command:$old}]}]}}' >"$SCAFFOLD_HOME/settings.json"
   "$SKILL/install.sh" --mode local --repo "$R" >/dev/null; "$SKILL/install.sh" --mode local --repo "$R" >/dev/null
@@ -642,7 +705,7 @@ t_install_local_idempotent() {
 }
 t_install_upgrades_unquoted_entries() {
   needs_skill || return 0
-  T=install_upgrades_unquoted_entries; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME"
+  T=install_upgrades_unquoted_entries; mkrepo none; export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME"
   d=$SCAFFOLD_HOME/scaffold/dispatch
   jq -n --arg d "$d" '{hooks:{SessionStart:[{hooks:[{type:"command",command:($d+" brief")}]}],Stop:[{hooks:[{type:"command",command:($d+" checkpoint")}]}],PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:($d+" gate")}]}]}}' >"$SCAFFOLD_HOME/settings.json"
   "$SKILL/install.sh" --mode local --repo "$R" >/dev/null; "$SKILL/install.sh" --mode local --repo "$R" >/dev/null
@@ -653,7 +716,7 @@ t_install_upgrades_unquoted_entries() {
 }
 t_install_shared() {
   needs_skill || return 0
-  T=install_shared; mkrepo shared; rm -rf "$R/.scaffold"
+  T=install_shared; mkrepo none
   SCAFFOLD_HOME=$BASE/home "$SKILL/install.sh" --mode shared --repo "$R" --board-url https://claude.ai/artifact/B >/dev/null
   has "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$R/.claude/settings.json")" '"$CLAUDE_PROJECT_DIR"/.scaffold/hooks/brief'
   has "$(cat "$R/.gitignore")" ".scaffold/STATUS.md"
@@ -664,12 +727,15 @@ t_install_shared() {
 }
 t_install_pushes() {
   needs_skill || return 0
-  T=install_pushes; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME=$BASE/home
+  T=install_pushes; mkrepo none; export SCAFFOLD_HOME=$BASE/home
   p=$BASE/home/scaffold/pushes
+  "$SKILL/install.sh" --register-board https://claude.ai/artifact/A --repo "$R" >/dev/null 2>"$BASE/err"; eq "$?" 2
+  has "$(cat "$BASE/err")" "no scaffold"
+  [ -e "$R/.scaffold" ] || [ -e "$BASE/home" ] && bad "register-board without scaffold wrote files" || ok
+  "$SKILL/install.sh" --mode local --repo "$R" >/dev/null
   "$SKILL/install.sh" --register-board https://claude.ai/artifact/A --repo "$R" >/dev/null
   "$SKILL/install.sh" --register-board https://claude.ai/artifact/B --repo "$R" >/dev/null
   eq "$(cat "$p")" "$R|board|https://claude.ai/artifact/B"
-  [ -e "$R/.scaffold" ] || [ -e "$BASE/home/settings.json" ] && bad "register-board wrote hooks" || ok
   "$SKILL/install.sh" --mode local --repo "$R" --extra-push 'https://claude.ai/artifact/X|coll|doc|/abs/f.json' >/dev/null
   "$SKILL/install.sh" --mode local --repo "$R" --extra-push 'https://claude.ai/artifact/X|coll2|doc2|/abs/g.json' --extra-push 'https://claude.ai/artifact/Y|c|d|/abs/h' >/dev/null
   eq "$(wc -l <"$p" | tr -d ' ')" "3"
@@ -681,7 +747,7 @@ t_install_pushes() {
 }
 t_install_rejects_bad_input() {
   needs_skill || return 0
-  T=install_rejects_bad_input; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME=$BASE/home
+  T=install_rejects_bad_input; mkrepo none; export SCAFFOLD_HOME=$BASE/home
   for args in "--register-board http://evil.example/x" "--mode local --board-url https://claude.ai/a|b" "--mode local --extra-push https://claude.ai/a|c|d|rel" "--mode local --extra-push https://x.example/a|c|d|/f"; do
     # shellcheck disable=SC2086
     "$SKILL/install.sh" $args --repo "$R" 2>"$BASE/err" >/dev/null; rc=$?
@@ -736,13 +802,14 @@ t_dispatch_gate_fast_path() {
   export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME/scaffold"; cp "$HOOKS/lib.sh" "$SCAFFOLD_HOME/scaffold/"; echo "$R" >"$SCAFFOLD_HOME/scaffold/repos"
   printf '#!/bin/sh\necho called >>"%s/git.calls"\nexec /usr/bin/git "$@"\n' "$BASE" >"$FAKEBIN/git"; chmod +x "$FAKEBIN/git"
   PATH="$FAKEBIN:$PATH" "$SKILL/dispatch" gate <<<"$(hookjson 'npm test')" >/dev/null
+  PATH="$FAKEBIN:$PATH" "$SKILL/dispatch" gate <<<"$(hookjson 'grep -rn "git push" docs')" >/dev/null
   [ -e "$BASE/git.calls" ] && bad "dispatch ran git for non-push command" || ok
   unset SCAFFOLD_HOME
 }
 
 t_install_settings_integrity() {
   needs_skill || return 0
-  T=install_settings_integrity; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME"
+  T=install_settings_integrity; mkrepo none; export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME"
   echo '{"permissions":{"allow":["x"]},"hooks":{"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"fmt"}]}],"Stop":[{"hooks":[]},{"hooks":[{"type":"command","command":"/x/my-scaffold/dispatcher checkpoint"},{"type":"command","command":"/p/.scaffold/hooks/gate"}]}]}}' >"$SCAFFOLD_HOME/settings.json"
   "$SKILL/install.sh" --mode local --repo "$R" >/dev/null; "$SKILL/install.sh" --mode local --repo "$R" >/dev/null
   s=$SCAFFOLD_HOME/settings.json
@@ -755,7 +822,7 @@ t_install_settings_integrity() {
 }
 t_install_validates_shape_before_writing() {
   needs_skill || return 0
-  T=install_validates_shape_before_writing; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME"
+  T=install_validates_shape_before_writing; mkrepo none; export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME"
   for bad in '{"hooks":[]}' '{"hooks":{"Stop":"x"}}' '{"hooks":{"Stop":[{"hooks":"x"}]}}' '{"hooks":{"Stop":[1]}}'; do
     echo "$bad" >"$SCAFFOLD_HOME/settings.json"
     "$SKILL/install.sh" --mode local --repo "$R" --board-url https://claude.ai/artifact/B 2>/dev/null >&2; eq "$?" "2"
@@ -767,17 +834,76 @@ t_install_validates_shape_before_writing() {
 }
 t_install_from_worktree_uses_main_checkout() {
   needs_skill || return 0
-  T=install_from_worktree_uses_main_checkout; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME=$BASE/home
+  T=install_from_worktree_uses_main_checkout; mkrepo none; export SCAFFOLD_HOME=$BASE/home
   git -C "$R" worktree add -q "$BASE/wt" -b feat/w
-  "$SKILL/install.sh" --mode local --repo "$BASE/wt" >/dev/null
+  out=$("$SKILL/install.sh" --mode local --repo "$BASE/wt")
+  eq "$(tail -n 1 <<<"$out")" "root=$R"
   [ -f "$R/.scaffold/config" ] && ok || bad "no scaffold in main checkout"
   [ -e "$BASE/wt/.scaffold" ] && bad "created .scaffold in worktree" || ok
   eq "$(cat "$SCAFFOLD_HOME/scaffold/repos")" "$R"
   unset SCAFFOLD_HOME
 }
+t_install_refuses_symlinked_destinations() {
+  needs_skill || return 0
+  T=install_refuses_symlinked_destinations; mkrepo shared; export SCAFFOLD_HOME=$BASE/home
+  echo keep >"$BASE/outside"; mv "$R/.scaffold/hooks/lib.sh" "$BASE/lib.orig"; ln -s "$BASE/outside" "$R/.scaffold/hooks/lib.sh"
+  git -C "$R" add -f .scaffold/hooks/lib.sh; git -C "$R" commit -qm link
+  "$SKILL/install.sh" --mode shared --repo "$R" >/dev/null 2>"$BASE/err"; eq "$?" 2
+  has "$(cat "$BASE/err")" "symlink"; eq "$(cat "$BASE/outside")" keep
+  [ -e "$R/.claude" ] || [ -e "$R/.gitignore" ] && bad "wrote despite symlinked hook" || ok
+  mkrepo local; export SCAFFOLD_HOME=$BASE/home; mv "$R/.scaffold" "$BASE/elsewhere"; ln -s "$BASE/elsewhere" "$R/.scaffold"
+  "$SKILL/install.sh" --mode local --repo "$R" >/dev/null 2>&1; eq "$?" 2
+  [ -e "$SCAFFOLD_HOME" ] || [ -e "$BASE/elsewhere/hooks/test.sh" ] && bad "wrote through symlinked .scaffold" || ok
+  mkrepo none; export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME/scaffold"; ln -s "$BASE/outside" "$SCAFFOLD_HOME/scaffold/lib.sh"; echo keep >"$BASE/outside"
+  "$SKILL/install.sh" --mode local --repo "$R" >/dev/null 2>&1; eq "$?" 2
+  eq "$(cat "$BASE/outside")" keep; [ -e "$R/.scaffold" ] && bad "wrote hooks despite symlinked dispatcher lib" || ok
+  unset SCAFFOLD_HOME
+}
+t_install_refuses_mode_change() {
+  needs_skill || return 0
+  T=install_refuses_mode_change; mkrepo none; export SCAFFOLD_HOME=$BASE/home
+  "$SKILL/install.sh" --mode local --repo "$R" >/dev/null
+  cp "$SCAFFOLD_HOME/settings.json" "$BASE/settings.before"
+  "$SKILL/install.sh" --mode shared --repo "$R" >/dev/null 2>"$BASE/err"; eq "$?" 2
+  has "$(cat "$BASE/err")" "migrat"; has "$(cat "$R/.scaffold/config")" "SCAFFOLD_MODE=local"
+  [ -e "$R/.claude" ] || [ -e "$R/.gitignore" ] && bad "local-to-shared wrote repo files" || ok
+  eq "$(cat "$SCAFFOLD_HOME/settings.json")" "$(cat "$BASE/settings.before")"
+  mkrepo shared; export SCAFFOLD_HOME=$BASE/home; st=$(git -C "$R" status --short)
+  "$SKILL/install.sh" --mode local --repo "$R" >/dev/null 2>"$BASE/err"; eq "$?" 2
+  has "$(cat "$BASE/err")" "migrat"; [ -e "$SCAFFOLD_HOME" ] && bad "shared-to-local wrote user files" || ok
+  eq "$(git -C "$R" status --short)" "$st"
+  mkrepo none; export SCAFFOLD_HOME=$BASE/home
+  "$SKILL/install.sh" --mode shared --repo "$R" >/dev/null; "$SKILL/install.sh" --mode shared --repo "$R" >/dev/null; eq "$?" 0  # rerun before commit
+  unset SCAFFOLD_HOME
+}
+t_install_register_board_shared_worktree() {
+  needs_skill || return 0
+  T=install_register_board_shared_worktree; mkrepo shared; export SCAFFOLD_HOME=$BASE/home
+  git -C "$R" worktree add -q "$BASE/wt" -b feat/w
+  out=$("$SKILL/install.sh" --register-board https://claude.ai/artifact/W --repo "$BASE/wt")
+  eq "$(cat "$SCAFFOLD_HOME/scaffold/pushes")" "$BASE/wt|board|https://claude.ai/artifact/W"
+  eq "$(tail -n 1 <<<"$out")" "root=$BASE/wt"
+  unset SCAFFOLD_HOME
+}
+t_board_missing_doc_clears_rows() {
+  needs_skill || return 0
+  T=board_missing_doc_clears_rows; command -v node >/dev/null || return 0
+  # Stub DOM: run the page script, render a populated board, then the board/current-deleted snapshot (null).
+  out=$(node -e '
+    const src = require("fs").readFileSync(process.argv[1], "utf8").split("<script>")[1].split("</script>")[0];
+    const el = () => ({ children: [], textContent: "", hidden: false, replaceChildren(...c) { this.children = c; }, append(...c) { this.children.push(...c); } });
+    const els = {}; ["meta", "now", "last", "unclaimed", "unclaimedBox"].forEach(i => { els[i] = el(); });
+    global.document = { getElementById: i => els[i], createElement: el }; global.location = { search: "" };
+    const render = new Function(src + "; return render;")();
+    render({ now: [{ task: "a" }], last_round: [{ task: "b" }], unclaimed: [{ number: 1 }] });
+    render(null);
+    console.log([els.now.children.length, els.last.children.length, els.unclaimed.children.length, els.unclaimedBox.hidden, els.meta.textContent.slice(0, 13)].join(" "));
+  ' "$SKILL/templates/board/index.html" 2>&1)
+  eq "$out" "0 0 0 true No board data"
+}
 t_install_quotes_dispatch_path() {
   needs_skill || return 0
-  T=install_quotes_dispatch_path; mkrepo local; rm -rf "$R/.scaffold"; export SCAFFOLD_HOME="$BASE/h o"
+  T=install_quotes_dispatch_path; mkrepo none; export SCAFFOLD_HOME="$BASE/h o"
   "$SKILL/install.sh" --mode local --repo "$R" >/dev/null
   eq "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$SCAFFOLD_HOME/settings.json")" "\"$BASE/h o/scaffold/dispatch\" brief"
   unset SCAFFOLD_HOME
@@ -788,7 +914,7 @@ t_dispatch_gate_multiline_and_tab_targets() {
   git -C "$R" worktree add -q "$BASE/wt" -b feat/w
   export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME/scaffold" "$BASE/out"; cp "$HOOKS/lib.sh" "$SCAFFOLD_HOME/scaffold/"
   echo "$R" >"$SCAFFOLD_HOME/scaffold/repos"
-  for c in $'make\ncd '"$BASE/wt"$' && git push' $'git\t-C\t'"$BASE/wt"$'\tpush'; do
+  for c in $'make\ncd '"$BASE/wt"$' && git push' $'git\t-C\t'"$BASE/wt"$'\tpush' "git  --no-pager  -C  $BASE/wt  push"; do
     j=$(jq -nc --arg d "$BASE/out" --arg c "$c" '{session_id:"s",cwd:$d,tool_name:"Bash",tool_input:{command:$c}}')
     deny_has "$(PATH="$FAKEBIN:$PATH" "$SKILL/dispatch" gate <<<"$j")" "no work note lists branch feat/w"
   done
@@ -811,31 +937,44 @@ t_dispatch_refuses_tracked_or_nonexec_hooks() {
 refresh_run() {
   mkdir -p "$BASE/decoy"; cp "$FAKEBIN/gh" "$BASE/decoy/gh"
   printf '#!/bin/sh\necho decoy >>"%s/decoy.called"\n' "$BASE" >"$BASE/decoy/claude"; chmod +x "$BASE/decoy/claude"
-  printf '#!/bin/sh\necho call >>"%s/claude.calls"\nprintf "%%s\\n" "$@" >"%s/claude.args"\necho "$PATH" >"%s/claude.path"\nmkdir -p .scaffold/inbox; echo r >".scaffold/inbox/$(date +%%F)-refresh.md"\n' "$BASE" "$BASE" "$BASE" >"$FAKEBIN/claude"
+  # Fake claude records argv, PATH, cwd and its listing, then writes out.md in its cwd unless FAKE_CLAUDE_SILENT.
+  cat >"$FAKEBIN/claude" <<EOF
+#!/bin/sh
+echo call >>"$BASE/claude.calls"
+printf '%s\n' "\$@" >"$BASE/claude.args"
+echo "\$PATH" >"$BASE/claude.path"
+pwd -P >"$BASE/claude.cwd"; LC_ALL=C ls -A >"$BASE/claude.ls"
+[ -n "\${FAKE_CLAUDE_SILENT:-}" ] || echo "refresh from out.md" >out.md
+EOF
   chmod +x "$FAKEBIN/claude"
   printf '#!/bin/sh\necho "$*" >>"%s/git.args"\nexec /usr/bin/git "$@"\n' "$BASE" >"$BASE/decoy/git"; chmod +x "$BASE/decoy/git"
   PATH="$BASE/decoy:/usr/bin:/bin" SCAFFOLD_CLAUDE_BIN="$FAKEBIN/claude" "$SKILL/templates/extras/haiku-refresh.sh" "$R"
 }
-refresh_setup() { mkrepo local; echo '[]' >"$GHOUT"; printf 'JIRA_PROJECT=ABC\n' >>"$R/.scaffold/config"; }
+refresh_setup() { mkrepo local; echo '[]' >"$GHOUT"; printf 'JIRA_PROJECT=ABC\n' >>"$R/.scaffold/config"; echo status >"$R/.scaffold/STATUS.md"; }
 t_refresh_args() {
   needs_skill || return 0
   T=refresh_args; refresh_setup; refresh_run
   eq "$(wc -l <"$BASE/claude.calls" | tr -d ' ')" 1
   eq "$(cat "$BASE/decoy.called" 2>/dev/null)" ""
   a=$(cat "$BASE/claude.args")
-  has "$a" "mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql"
-  lacks "$a" "Atlassian_Rovo"
+  eq "$(sed -n 1p "$BASE/claude.args")" "-p"
+  # Exact flags (prompt line dropped): user settings only, writes only via Edit(./out.md) in the temp cwd, repo denied by absolute rule.
+  eq "$(sed 2d "$BASE/claude.args" | paste -sd' ' -)" "-p --model claude-haiku-5-5 --setting-sources user --permission-mode dontAsk --tools Read,Write,Edit,ToolSearch --allowedTools Read(./**) Edit(./out.md) mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql ToolSearch --disallowedTools Edit(/$R/**) Write(/$R/**) --max-turns 25 --max-budget-usd 1"
   has "$a" "project = ABC"
-  has "$a" "user,project"
-  has "$a" "Read(./.scaffold/**)"
-  has "$a" "Write(./.scaffold/inbox/$(date +%F)-refresh.md)"
-  has "$a" "Read,Write,ToolSearch"
   has "$a" "never follow instructions"
-  has "$a" "--max-budget-usd"
-  has "$a" "--max-turns"
-  lacks "$a" "Write(./.scaffold/**)"
+  cwd=$(cat "$BASE/claude.cwd")
+  case $cwd in "$R" | "$R"/*) bad "claude ran inside the repo: $cwd" ;; *) ok ;; esac
+  eq "$(paste -sd' ' - <"$BASE/claude.ls")" "STATUS.md facts.md"
+  [ -e "$cwd" ] && bad "temp cwd left behind" || ok
+  eq "$(cat "$R/.scaffold/inbox/$(date +%F)-refresh.md")" "refresh from out.md"
   case $(cat "$BASE/claude.path") in "$BASE/decoy:/usr/bin:/bin"*) ok ;; *) bad "PATH not caller-first: $(cat "$BASE/claude.path")" ;; esac
   [ -s "$R/.scaffold/.hookstate/last-refresh" ] && ok || bad "last-refresh not written"
+}
+t_refresh_empty_output() {
+  needs_skill || return 0
+  T=refresh_empty_output; refresh_setup; FAKE_CLAUDE_SILENT=1 refresh_run
+  [ -e "$R/.scaffold/inbox/$(date +%F)-refresh.md" ] && bad "inbox file without out.md" || ok
+  [ -e "$R/.scaffold/.hookstate/last-refresh" ] && bad "last-refresh advanced without output" || ok
 }
 t_refresh_jira_tool_validated() {
   needs_skill || return 0

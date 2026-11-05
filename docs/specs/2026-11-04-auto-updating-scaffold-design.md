@@ -113,6 +113,13 @@ Round 2 (2026-11-04, 18 findings), changes to the design:
 - Contributor-controlled names (note and inbox filenames, branch names) are sanitised before they reach session context; inbox names print inside the data block.
 - `dispatch` resolves a gated command's target repo before the registry lookup; `merged.json` freshness is keyed to the base commit; `gh` calls share one deadline; per-branch lookups rotate fairly; STATUS and state files are replaced atomically.
 
+Branch review (2026-11-05, 14 findings), changes to the design:
+
+- Mode is derived, not configured: everyone mode iff `.scaffold/config` is tracked (`effective_mode`); its `SCAFFOLD_MODE` key no longer selects the reader. The installer refuses (exit 2, nothing written) a mode different from the existing scaffold's, any symlinked destination, and `--register-board` without an existing scaffold; its last stdout line is `root=<abs>`, which the skill uses for every later step.
+- `render` writes an immutable `board-push-<hash>.json` (3 newest kept); `brief` asks to push that file and ack exactly its hash, so a concurrent rebuild is never acked unsent.
+- `haiku-refresh` runs Haiku with user settings only, in a fresh temp dir holding copies of the facts and STATUS, with `Edit(./out.md)` as its only write grant and the repo denied by absolute rule; the shell copies `out.md` into the inbox.
+- Push/PR detection matches command positions only (quoted text counts only as a `bash|sh|zsh -c` / `eval` script) and accepts git global options and `gh -R`.
+
 ## Out of scope
 
 CI enforcement (D3); Jira in `catchup` (needs MCP or API token; stays in the `haiku-refresh` extra); multi-repo scaffolds; Jira tickets on the status board (needs the Jira pull; ai_gateway's Launch Board keeps its own Jira-driven build); boards aggregating several repos.

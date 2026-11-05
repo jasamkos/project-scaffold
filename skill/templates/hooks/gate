@@ -26,7 +26,7 @@ nonote="no work note lists branch $b. Create $SC/work/active/<task>.md whose fir
 
 if [ "$SCAFFOLD_MODE" = shared ]; then
   # The PR carries the committed copy: discover and validate from HEAD, never the working tree.
-  rel=$(committed_note_for_branch "$top" "$branch")
+  rel=$(committed_note_for_branch "$top" "$branch") || exit 0  # git failed: no decision
   if [ -z "$rel" ]; then
     wt=$(notes_for_branch "$branch" | head -1)
     [ -n "$wt" ] || deny "$nonote"

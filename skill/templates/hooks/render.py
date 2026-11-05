@@ -29,9 +29,28 @@ def main(root, base, mode):
     board = {"base": base_info(root), "now": now, "last_round": last, "unclaimed": load_json(state / "unclaimed.json", [])}
     digest = hashlib.sha256(json.dumps(board, sort_keys=True).encode()).hexdigest()
     stamped = dict(board, generated_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
-    write_atomic(state / "board.json", json.dumps(stamped, indent=1))
+    payload = json.dumps(stamped, indent=1)
+    write_atomic(state / "board.json", payload)
+    snapshot(state, digest, payload)
     write_atomic(state / "board.hash", digest + "\n")
     write_status(sc / "STATUS.md", root.name, markdown(board))
+
+
+def snapshot(state, digest, payload):
+    # Immutable per-hash board copy that brief asks to push and ack: a concurrent rebuild cannot change what is acked.
+    # Written here, not in brief, so name and content come from one computation. Keeps the 3 newest.
+    snap = state / ("board-push-%s.json" % digest)
+    if snap.exists():
+        os.utime(snap)
+    else:
+        write_atomic(snap, payload)
+    try:
+        old = sorted(state.glob("board-push-*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[3:]
+        for p in old:
+            if p != snap:
+                p.unlink()
+    except OSError:
+        pass  # a concurrent session pruned first
 
 
 def working_notes(root):
