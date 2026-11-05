@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Stop: once per session, block if the session did repo work but its work note did not change (spec D1).
+set -uo pipefail
+[ "${SCAFFOLD_HEADLESS:-}" = 1 ] && exit 0  # unattended refresh sessions must not get brief/gate behaviour
+input=$(cat)
+[ "$(jq -r '.stop_hook_active // false' <<<"$input" 2>/dev/null)" = true ] && exit 0
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh" 2>/dev/null || exit 0
+dir=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null) || exit 0
+dir=${dir:-$PWD}
+root=$(scaffold_root "$dir") || exit 0
+load_config "$root" || exit 0
+state_safe "$root" || exit 0
+sid=$(jq -r '.session_id // "unknown"' <<<"$input" 2>/dev/null | tr -cd '[:alnum:]_-')
+sid=${sid:-unknown}
+marker=$STATE/$sid.start
+[ -e "$marker" ] || { mkdir -p "$STATE"; touch "$marker"; exit 0; }
+[ -e "$STATE/$sid.nagged" ] && exit 0
+transcript=$(jq -r '.transcript_path // empty' <<<"$input" 2>/dev/null)
+[ -f "$transcript" ] || exit 0
+branch=$(git -C "$dir" branch --show-current 2>/dev/null || true)
+note=$(notes_for_branch "$branch" | head -1)
+if [ -n "$note" ]; then
+  [ "$note" -nt "$marker" ] && exit 0
+elif [ -z "$branch" ] || [ "$branch" = "$BASE_BRANCH" ]; then
+  # Base-branch work has no single owning note: any updated note counts. Feature branches need their own.
+  [ -n "$(find "$SC/work" -name '*.md' -newer "$marker" -print -quit 2>/dev/null)" ] && exit 0
+fi
+top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || exit 0
+did_repo_work "$transcript" "$top" || exit 0
+touch "$STATE/$sid.nagged"
+if [ -n "$note" ]; then target=$(safe_text <<<"${note#"$root"/}"); else target=".scaffold/work/active/ (a new note for this work)"; fi
+extra=""
+[ "$SCAFFOLD_MODE" = shared ] && extra=" Notes are team-visible: write for teammates, no personal asides."
+jq -n --arg r "scaffold checkpoint: this session changed repo files, committed, pushed or touched a PR, but its work note was not updated. Update the header (status/branch/waiting-on/next) of $target, and DECISIONS.md if a durable choice was made; then finish.$extra" '{decision: "block", reason: $r}'

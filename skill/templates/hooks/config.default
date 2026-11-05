@@ -1,0 +1,5 @@
+# Scaffold hook settings, read by .scaffold/hooks/lib.sh.
+SCAFFOLD_MODE=local
+BASE_BRANCH=main
+REMOTE=origin
+# This file is parsed as data (KEY=value), never sourced.

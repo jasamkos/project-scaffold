@@ -107,6 +107,30 @@ Security and correctness refinements from Codex review of the plan (2026-11-04, 
 - `gate` resolves the repo a command targets (`git -C`, leading `cd … &&`), fails open on git errors, and keeps separate push and PR stamps in just-me mode.
 - Merge history is a union cache plus per-branch lookups for unresolved notes, so old merges never fall back to "Now".
 
+Round 2 (2026-11-04, 18 findings), changes to the design:
+
+- Push destinations (`BOARD_URL`, extra pushes) live in the user-owned `~/.claude/scaffold/pushes`, never in committed config: a contributor-written `EXTRA_PUSH` could otherwise make a session upload a secret file. Consequence for D8: in everyone mode only sessions of users who registered the board (`install.sh --register-board`) push it; the installer does at install.
+- Contributor-controlled names (note and inbox filenames, branch names) are sanitised before they reach session context; inbox names print inside the data block.
+- `dispatch` resolves a gated command's target repo before the registry lookup; `merged.json` freshness is keyed to the base commit; `gh` calls share one deadline; per-branch lookups rotate fairly; STATUS and state files are replaced atomically.
+
+Branch review (2026-11-05, 14 findings), changes to the design:
+
+- Mode is derived, not configured: everyone mode iff `.scaffold/config` is tracked (`effective_mode`); its `SCAFFOLD_MODE` key no longer selects the reader. The installer refuses (exit 2, nothing written) a mode different from the existing scaffold's, any symlinked destination, and `--register-board` without an existing scaffold; its last stdout line is `root=<abs>`, which the skill uses for every later step.
+- `render` writes an immutable `board-push-<hash>.json` (3 newest kept); `brief` asks to push that file and ack exactly its hash, so a concurrent rebuild is never acked unsent.
+- `haiku-refresh` runs Haiku with user settings only, in a fresh temp dir holding copies of the facts and STATUS, with `Edit(./out.md)` as its only write grant and the repo denied by absolute rule; the shell copies `out.md` into the inbox.
+- Push/PR detection matches command positions only (quoted text counts only as a `bash|sh|zsh -c` / `eval` script) and accepts git global options and `gh -R`.
+
+Branch review 2 (2026-11-05, 11 findings), changes to the design:
+
+- Unknown tracking state fails closed: if `git ls-files` fails (e.g. corrupt index), `dispatch` runs no hook and `effective_mode` returns 2; `brief` then renders and publishes nothing (one warning line), `gate` and `checkpoint` decide nothing.
+- `haiku-refresh` gives Haiku no write tool (`--tools Read,ToolSearch`): an inherited path-scoped Edit grant reaches files outside any deny list. Haiku prints the report to stdout; the shell captures it into the temp dir's `out.md` and copies it to the inbox only if non-empty.
+- Hooks (and `render.py`/`catchup.py` run directly) refuse to read or write through a symlink under `.scaffold/`: `.scaffold`, `.hookstate`, `work/` and its stage dirs, `inbox` must be real directories, and `STATUS.md` and `.hookstate` entries must not be links; otherwise they exit 0 writing nothing (`brief` prints one warning line).
+- Merge history keeps the latest merged PR per branch, and a note whose first branch has an open PR (one `gh pr list --state open` call per rebuild, cached with the history) stays in Now: a reused branch name no longer marks new work done. `work/completed/` notes feed Last round only.
+
+Branch review 3 (2026-11-05, 7 findings), changes to the design:
+
+- Scheduled jobs never run checkout code: a pull can overwrite ignored `.scaffold/hooks/` files. `install.sh --job catchup|haiku-refresh` (just-me only) copies the job and its helper (`render.py` / `lib.sh`) into user-owned `~/.claude/scaffold/jobs/<job>/` and writes the launchd plist running that copy on the root. Each run first requires `git ls-files -- .scaffold` to succeed empty and the root to be in the registry, else exits 0 doing nothing.
+
 ## Out of scope
 
 CI enforcement (D3); Jira in `catchup` (needs MCP or API token; stays in the `haiku-refresh` extra); multi-repo scaffolds; Jira tickets on the status board (needs the Jira pull; ai_gateway's Launch Board keeps its own Jira-driven build); boards aggregating several repos.
