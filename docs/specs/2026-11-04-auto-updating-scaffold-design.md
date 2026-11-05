@@ -127,6 +127,10 @@ Branch review 2 (2026-11-05, 11 findings), changes to the design:
 - Hooks (and `render.py`/`catchup.py` run directly) refuse to read or write through a symlink under `.scaffold/`: `.scaffold`, `.hookstate`, `work/` and its stage dirs, `inbox` must be real directories, and `STATUS.md` and `.hookstate` entries must not be links; otherwise they exit 0 writing nothing (`brief` prints one warning line).
 - Merge history keeps the latest merged PR per branch, and a note whose first branch has an open PR (one `gh pr list --state open` call per rebuild, cached with the history) stays in Now: a reused branch name no longer marks new work done. `work/completed/` notes feed Last round only.
 
+Branch review 3 (2026-11-05, 7 findings), changes to the design:
+
+- Scheduled jobs never run checkout code: a pull can overwrite ignored `.scaffold/hooks/` files. `install.sh --job catchup|haiku-refresh` (just-me only) copies the job and its helper (`render.py` / `lib.sh`) into user-owned `~/.claude/scaffold/jobs/<job>/` and writes the launchd plist running that copy on the root. Each run first requires `git ls-files -- .scaffold` to succeed empty and the root to be in the registry, else exits 0 doing nothing.
+
 ## Out of scope
 
 CI enforcement (D3); Jira in `catchup` (needs MCP or API token; stays in the `haiku-refresh` extra); multi-repo scaffolds; Jira tickets on the status board (needs the Jira pull; ai_gateway's Launch Board keeps its own Jira-driven build); boards aggregating several repos.

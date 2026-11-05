@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Record merged PRs no work note claims, so non-Claude work still shows in STATUS. No LLM."""
+"""Record merged PRs no work note claims, so non-Claude work still shows in STATUS. No LLM.
+
+Scheduled runs use the user-owned copy `install.sh --job catchup` writes, importing its sibling render.py, never checkout code."""
 import datetime
 import json
 import os
@@ -20,7 +22,7 @@ KEEP = 50
 def main(root):
     sc = root / ".scaffold"
     state = sc / ".hookstate"
-    if render.state_unsafe(sc):
+    if not job_allowed(root) or render.state_unsafe(sc):
         return
     state.mkdir(exist_ok=True)
     today = utc_today()
@@ -35,6 +37,14 @@ def main(root):
     keep = sorted((u for u in entries.values() if u["branch"] not in claimed), key=lambda u: u["merged_at"], reverse=True)[:KEEP]
     render.write_atomic(state / "unclaimed.json", json.dumps(keep, indent=1))
     render.write_atomic(state / "catchup-since", cursor.isoformat() + "\n")
+
+
+def job_allowed(root):
+    # A pull can write tracked paths under .scaffold/: act only for a registered, wholly untracked scaffold. Git failure raises.
+    if render.git(root, "ls-files", "--", ".scaffold", strict=True).strip():
+        return False
+    home = Path(os.environ.get("SCAFFOLD_HOME") or Path.home() / ".claude")
+    return str(root) in read_text(home / "scaffold" / "repos").splitlines()
 
 
 def utc_today():

@@ -2,19 +2,21 @@
 # Install scaffold hooks.
 # Usage: install.sh --mode local|shared --repo DIR [--board-url URL] [--extra-push 'url|coll|doc|/abs/file']...
 #        install.sh --register-board URL --repo DIR   (pushes line only: no hooks)
+#        install.sh --job catchup|haiku-refresh --repo DIR   (just-me daily job: user-owned copy + launchd plist)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=templates/hooks/lib.sh
 . "$here/templates/hooks/lib.sh"  # scaffold_root, effective_mode
-mode="" repo="" board="" register="" extras=""
+mode="" repo="" board="" register="" extras="" job=""
 while [ $# -gt 0 ]; do
-  case $1 in -h | --help) sed -n '3,4p' "$0" | cut -c3-; exit 0 ;; esac
+  case $1 in -h | --help) sed -n '3,5p' "$0" | cut -c3-; exit 0 ;; esac
   [ $# -ge 2 ] || { echo "missing value for $1" >&2; exit 2; }
   case $1 in
     --mode) mode=$2 ;;
     --repo) repo=$2 ;;
     --board-url) board=$2 ;;
     --register-board) register=$2 ;;
+    --job) job=$2 ;;
     --extra-push) extras+="${extras:+$'\n'}$2" ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -33,6 +35,11 @@ hook_files="lib.sh brief checkpoint gate render.py catchup.py test.sh"
 main() {
   local e settings existing dir=$repo
   [ -n "$repo" ] || die "--repo is required"
+  if [ -n "$job" ]; then
+    [ -z "$mode$board$extras$register" ] || die "--job takes only --repo"
+    install_job
+    return 0
+  fi
   if [ -n "$register" ]; then
     [ -z "$mode$board$extras" ] || die "--register-board takes only --repo"
     valid_board "$register"
@@ -74,6 +81,40 @@ main() {
     merge_settings "$settings" '"$CLAUDE_PROJECT_DIR"/.scaffold/hooks/'
   fi
   echo "installed $mode scaffold hooks in $repo"; echo "root=$repo"
+}
+
+# Pulls can write tracked or ignored checkout files, so launchd runs a user-owned copy of the job (spec, branch review 3).
+install_job() {
+  local dir tracked label plist_dir plist d files f src tmp line
+  case $job in catchup) files="catchup.py render.py" ;; haiku-refresh) files="haiku-refresh.sh lib.sh" ;; *) die "--job catchup|haiku-refresh" ;; esac
+  dir=$repo
+  repo=$(scaffold_root "$dir") || die "no scaffold serves $dir: install it with --mode local first"
+  check_repo_path
+  tracked=$(git -C "$repo" ls-files -- .scaffold 2>/dev/null) || die "cannot read tracking state of $repo"
+  if [ -n "$tracked" ] || [ "$(installed_mode "$repo")" != local ]; then die "$repo has an everyone (tracked) scaffold: --job is just-me only"; fi
+  grep -qxF -- "$repo" "$home/scaffold/repos" 2>/dev/null || die "$repo is not in $home/scaffold/repos: install it with --mode local first"
+  d=$home/scaffold/jobs/$job plist_dir=${SCAFFOLD_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}
+  label=io.scaffold.$(basename "$repo").$job plist=$plist_dir/io.scaffold.$(basename "$repo").$job.plist
+  # Values go into plist XML and bash ${//} replacements (bash 5.2 treats & there as the match).
+  case $d$plist$repo in *[\&\<\\]*) die "paths for --job must not contain &, < or \\" ;; esac
+  refuse_symlinks "$home/scaffold" "$home/scaffold/jobs" "$d" "$plist"
+  for f in $files; do refuse_symlinks "$d/$f"; done
+  mkdir -p "$d" "$plist_dir"
+  for f in $files; do
+    src=$here/templates/hooks/$f; [ -f "$src" ] || src=$here/templates/extras/$f
+    cp "$src" "$d/$f"
+  done
+  chmod +x "$d/${files%% *}"
+  tmp=$(mktemp "$plist.XXXXXX"); TMPS+=("$tmp")
+  while IFS= read -r line; do
+    line=${line//"{{LABEL}}"/$label}; line=${line//"{{COMMAND}}"/$d/${files%% *}}; line=${line//"{{ARG}}"/$repo}
+    line=${line//"{{HOUR}}"/8}; line=${line//"{{LOG}}"/$d/$(basename "$repo").log}
+    printf '%s\n' "$line"
+  done <"$here/templates/extras/scaffold-job.plist" >"$tmp"
+  mv "$tmp" "$plist"
+  echo "installed $job job for $repo: $plist"
+  echo "load it (after launchctl bootout gui/$(id -u)/$label if already loaded): launchctl bootstrap gui/$(id -u) $plist"
+  echo "root=$repo"
 }
 
 check_repo_path() { case $repo in *'|'* | *$'\n'*) die "repo path must not contain | or newline" ;; esac; }

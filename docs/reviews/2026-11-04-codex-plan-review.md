@@ -31,3 +31,21 @@
 # Round 2 (2026-11-04, `184d8bf`)
 
 18 findings (3 P1, 15 P2), all accepted; each became a binding "Round-2 amendments" block in its task (Tasks 1, 2, 3, 5, 6, 7, 8, 10, 11, 12) plus a spec section. P1: committed `EXTRA_PUSH` could upload secrets → push destinations user-owned (`~/.claude/scaffold/pushes`); inbox/note filenames could inject instructions → `safe_text` + inbox inside the data block; `dispatch` checked the session cwd, not the command target → resolve target before registry lookup. P2: atomic STATUS write, one gh deadline, fair branch lookups, base-keyed cache freshness, quote-aware target parsing, HEAD-only shared discovery, compound push+PR stamps, migration jq keeps siblings, refresh never prepends PATH (real `claude` risk), committed-unchanged-note test, per-scenario cache assertions, independent source-checkout marker, unique sentinel, shellcheck source resolution, real catchup pagination.
+
+# Whole-branch review rounds 1–3 (2026-11-05): open follow-ups
+
+- Round 1: 14 findings (5 P1, 8 P2, 1 P3), all fixed in `4f32489`.
+- Round 2: 11 findings (4 P1, 7 P2), all fixed in `1239e75`.
+- Round 3: 7 findings (2 P1, 5 P2); 4 fixed in the commit that adds this section (scheduled jobs run user-owned copies via `install.sh --job`, symlinked refresh output refused, standalone `render.py` derives mode, refresh publishes only on Claude exit 0), 3 P2 deferred below.
+
+## Nested and escaped quotes lose commands (`lib.sh` `_exec_text`)
+
+Repro: `printf '%s\n' "$(git -C "/path/to/repo" push)"` executes the push, but the parser ends the outer string at the inner `"`, so `cmd_kinds` returns nothing and gate and dispatch allow a note-less feature-branch push; without the inner quotes it is denied. Escaped quoted examples (`echo \"git push\"`) are misclassified as executable pushes. Approach: replace the next-matching-quote split with a small state machine over the command (single quotes literal, double quotes honouring `\` escapes and recursing into `$(…)`/backticks with paren depth), still spawning nothing.
+
+## Only the first gated invocation is validated (`lib.sh` `target_dir`)
+
+Repro: `git -C /allowed push && git -C /other push`: only the first invocation's repo is resolved; if `/allowed` is on the base branch gate exits and the second push from a feature branch with no note is allowed, while that push alone is denied. Approach: have the exec view yield every push/PR invocation with its own `cd`/`-C`/`--git-dir`/`--work-tree` target, and make gate and dispatch decide per invocation (deny if any is denied).
+
+## Completed note disappears when its branch name is reused (`render.py` `split`)
+
+Repro: a `work/completed/` note names a merged branch, then a new PR reuses that branch name: the open-branch exclusion drops its merge association and the completed-directory exclusion drops it from Now, so the task vanishes from both sections although its merge stays cached. Approach: skip the open-branch rule for completed notes (they always pair with their cached merge), and add a test combining a completed note with an open PR on the same branch.

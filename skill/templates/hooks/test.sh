@@ -612,6 +612,17 @@ t_render_latest_pr_and_open_branch() {
   echo '[{"number":10,"headRefName":"feat/a","mergedAt":"2026-11-04T10:00:00Z"}]' >"$GHOUT"; echo '[]' >"$GHOUT.open"; expire_cache
   render; eq "$(board '[.last_round[] | "\(.task)#\(.pr)"] | join(",")')" "a#10,b#5"
 }
+t_render_derives_mode_when_omitted() {
+  T=render_derives_mode_when_omitted; mkrepo shared; echo '[]' >"$GHOUT"
+  note pub feat/p; commit_note pub; note draft feat/d
+  PATH="$FAKEBIN:$PATH" python3 -I "$R/.scaffold/hooks/render.py" "$R"
+  eq "$(board '[.now[].task] | join(",")')" "pub"; lacks "$(cat "$R/.scaffold/STATUS.md")" "draft"
+  mkrepo local; echo '[]' >"$GHOUT"; note a feat/a
+  PATH="$FAKEBIN:$PATH" python3 -I "$R/.scaffold/hooks/render.py" "$R"; eq "$(board '[.now[].task] | join(",")')" "a"
+  mkrepo shared; note draft feat/d; corrupt_index
+  PATH="$FAKEBIN:$PATH" python3 -I "$R/.scaffold/hooks/render.py" "$R"; eq "$?" 0
+  eq "$(ls -A "$R/.scaffold/.hookstate"):$([ -e "$R/.scaffold/STATUS.md" ] && echo status)" ":"
+}
 t_render_parses_like_bash() {
   T=render_parses_like_bash; mkrepo local; echo '[]' >"$GHOUT"
   printf 'status: a\fb\nbranch: feat/a\xc2\xa0x, feat/b;feat/c\vd\n' >"$R/.scaffold/work/active/p.md"
@@ -620,7 +631,8 @@ t_render_parses_like_bash() {
   eq "$(board '.now[0].status')" "$(header "$f" status)"
 }
 
-catchup() { SCAFFOLD_TODAY="${SCAFFOLD_TODAY-2026-11-04}" PATH="$FAKEBIN:$PATH" python3 -I "$R/.scaffold/hooks/catchup.py" "$R"; }
+reg() { mkdir -p "$BASE/home/scaffold"; grep -qxF -- "$R" "$BASE/home/scaffold/repos" 2>/dev/null || echo "$R" >>"$BASE/home/scaffold/repos"; }
+catchup() { reg; SCAFFOLD_HOME=$BASE/home SCAFFOLD_TODAY="${SCAFFOLD_TODAY-2026-11-04}" PATH="$FAKEBIN:$PATH" python3 -I "$R/.scaffold/hooks/catchup.py" "$R"; }
 t_catchup_unclaimed() {
   T=catchup_unclaimed; mkrepo local; note mine feat/mine
   echo '[{"number":1,"title":"mine","headRefName":"feat/mine","mergedAt":"2026-11-03T10:00:00Z","author":{"login":"me"}},{"number":2,"title":"theirs","headRefName":"feat/theirs","mergedAt":"2026-11-03T11:00:00Z","author":{"login":"ann"}}]' >"$GHOUT"
@@ -1080,12 +1092,89 @@ echo "\$PATH" >"$BASE/claude.path"
 pwd -P >"$BASE/claude.cwd"; LC_ALL=C ls -A >"$BASE/claude.ls"
 echo "stderr noise" >&2
 [ -n "\${FAKE_CLAUDE_SILENT:-}" ] || echo "refresh from stdout"
+exit \${FAKE_CLAUDE_RC:-0}
 EOF
   chmod +x "$FAKEBIN/claude"
   printf '#!/bin/sh\necho "$*" >>"%s/git.args"\nexec /usr/bin/git "$@"\n' "$BASE" >"$BASE/decoy/git"; chmod +x "$BASE/decoy/git"
-  PATH="$BASE/decoy:/usr/bin:/bin" SCAFFOLD_CLAUDE_BIN="$FAKEBIN/claude" "$SKILL/templates/extras/haiku-refresh.sh" "$R"
+  PATH="$BASE/decoy:/usr/bin:/bin" SCAFFOLD_HOME=$BASE/home SCAFFOLD_CLAUDE_BIN="$FAKEBIN/claude" "$BASE/home/scaffold/jobs/haiku-refresh/haiku-refresh.sh" "$R"
 }
-refresh_setup() { mkrepo local; echo '[]' >"$GHOUT"; printf 'JIRA_PROJECT=ABC\n' >>"$R/.scaffold/config"; echo status >"$R/.scaffold/STATUS.md"; }
+# Scheduled jobs run the user-owned copy install.sh --job writes; plists go to $BASE/la, never ~/Library.
+job() { reg; SCAFFOLD_HOME=$BASE/home SCAFFOLD_LAUNCHAGENTS=$BASE/la "$SKILL/install.sh" --job "$1" --repo "$R"; }
+refresh_setup() { mkrepo local; echo '[]' >"$GHOUT"; printf 'JIRA_PROJECT=ABC\n' >>"$R/.scaffold/config"; echo status >"$R/.scaffold/STATUS.md"; job haiku-refresh >/dev/null; }
+t_install_job_plist() {
+  needs_skill || return 0
+  T=install_job_plist; mkrepo local
+  for j in catchup haiku-refresh; do
+    out=$(job "$j"); eq "$?" 0
+    p=$BASE/la/io.scaffold.repo.$j.plist d=$BASE/home/scaffold/jobs/$j
+    case $j in catchup) cmd=$d/catchup.py files="catchup.py render.py" ;; *) cmd=$d/haiku-refresh.sh files="haiku-refresh.sh lib.sh" ;; esac
+    eq "$(tail -n 1 <<<"$out")" "root=$R"
+    has "$out" "launchctl bootstrap gui/$(id -u) $p"
+    eq "$(ls "$d" | paste -sd' ' -)" "$files"
+    [ -x "$cmd" ] && ok || bad "$cmd not executable"
+    has "$(cat "$p")" "<string>io.scaffold.repo.$j</string>"
+    has "$(cat "$p")" "<array><string>$cmd</string><string>$R</string></array>"
+    lacks "$(cat "$p")" "{{"; lacks "$(cat "$p")" "$R/.scaffold/"
+    ! command -v plutil >/dev/null || { plutil -lint "$p" >/dev/null && ok || bad "plist does not lint"; }
+  done
+}
+t_install_job_refusals() {
+  needs_skill || return 0
+  T=install_job_refusals
+  mkrepo shared; job catchup >/dev/null 2>"$BASE/err"; eq "$?" 2; has "$(cat "$BASE/err")" "just-me"
+  [ -e "$BASE/la" ] || [ -e "$BASE/home/scaffold/jobs" ] && bad "job installed for shared scaffold" || ok
+  mkrepo local; echo x >"$R/.scaffold/inbox/t.md"; git -C "$R" add -f .scaffold/inbox/t.md; git -C "$R" commit -qm t
+  job haiku-refresh >/dev/null 2>&1; eq "$?" 2
+  [ -e "$BASE/la" ] || [ -e "$BASE/home/scaffold/jobs" ] && bad "job installed for tracked .scaffold/" || ok
+  mkrepo local; SCAFFOLD_HOME=$BASE/home SCAFFOLD_LAUNCHAGENTS=$BASE/la "$SKILL/install.sh" --job catchup --repo "$R" >/dev/null 2>&1; eq "$?" 2
+  [ -e "$BASE/la" ] || [ -e "$BASE/home" ] && bad "job installed for unregistered repo" || ok
+  mkrepo local; mkdir -p "$BASE/home/scaffold" "$BASE/elsewhere"; ln -s "$BASE/elsewhere" "$BASE/home/scaffold/jobs"
+  job catchup >/dev/null 2>&1; eq "$?" 2; eq "$(ls -A "$BASE/elsewhere")" ""; [ -e "$BASE/la" ] && bad "plist written despite symlink" || ok
+  mkrepo local; job nope >/dev/null 2>&1; eq "$?" 2
+  SCAFFOLD_HOME=$BASE/home SCAFFOLD_LAUNCHAGENTS=$BASE/la "$SKILL/install.sh" --job catchup --mode local --repo "$R" >/dev/null 2>&1; eq "$?" 2
+  [ -e "$BASE/la" ] && bad "plist written for rejected arguments" || ok
+}
+# The finding's attack: a pull overwrites ignored checkout files (here planted directly), then the scheduled job runs.
+t_job_refresh_ignores_checkout_code() {
+  needs_skill || return 0
+  T=job_refresh_ignores_checkout_code; refresh_setup
+  for f in haiku-refresh.sh lib.sh; do printf '#!/bin/sh\necho %s >>"%s/evil"\n' "$f" "$BASE" >"$R/.scaffold/hooks/$f"; chmod +x "$R/.scaffold/hooks/$f"; done
+  refresh_run; eq "$(cat "$BASE/evil" 2>/dev/null)" ""; eq "$(wc -l <"$BASE/claude.calls" | tr -d ' ')" 1
+  rm -f "$BASE/claude.calls" "$BASE/gh.calls" "$R/.scaffold/.hookstate/last-refresh" "$R/.scaffold/inbox/"*
+  git -C "$R" add -f .scaffold/hooks/haiku-refresh.sh; git -C "$R" commit -qm evil
+  refresh_run; eq "$?" 0; eq "$(cat "$BASE/claude.calls" "$BASE/gh.calls" "$BASE/evil" 2>/dev/null)" ""
+  git -C "$R" rm -q --cached .scaffold/hooks/haiku-refresh.sh; git -C "$R" commit -qm untrack; : >"$BASE/home/scaffold/repos"
+  refresh_run; eq "$(cat "$BASE/claude.calls" "$BASE/gh.calls" 2>/dev/null)" ""
+}
+t_job_catchup_ignores_checkout_code() {
+  needs_skill || return 0
+  T=job_catchup_ignores_checkout_code; mkrepo local; job catchup >/dev/null; S=$R/.scaffold/.hookstate
+  echo '[{"number":2,"title":"theirs","headRefName":"feat/theirs","mergedAt":"2026-11-03T11:00:00Z","author":{"login":"ann"}}]' >"$GHOUT"
+  printf 'open("%s/evil", "a").write("render\\n")\n' "$BASE" >"$R/.scaffold/hooks/render.py"
+  run_job() { (cd / && SCAFFOLD_HOME=$BASE/home SCAFFOLD_TODAY=2026-11-04 PATH="$FAKEBIN:$PATH" "$BASE/home/scaffold/jobs/catchup/catchup.py" "$R"); }
+  run_job; eq "$(cat "$BASE/evil" 2>/dev/null)" ""; eq "$(jq -r '[.[].number] | join(",")' "$S/unclaimed.json")" "2"
+  rm -f "$S/unclaimed.json" "$S/catchup-since" "$BASE/gh.calls"
+  echo x >"$R/.scaffold/inbox/t.md"; git -C "$R" add -f .scaffold/inbox/t.md; git -C "$R" commit -qm t
+  run_job; eq "$?" 0; eq "$(cat "$BASE/gh.calls" 2>/dev/null)" ""; [ -e "$S/unclaimed.json" ] && bad "catchup ran on tracked .scaffold/" || ok
+  git -C "$R" rm -q --cached .scaffold/inbox/t.md; git -C "$R" commit -qm untrack; : >"$BASE/home/scaffold/repos"
+  run_job; eq "$(cat "$BASE/gh.calls" 2>/dev/null)" ""
+}
+t_refresh_symlinked_output() {
+  needs_skill || return 0
+  T=refresh_symlinked_output; refresh_setup; out=$R/.scaffold/inbox/$(date +%F)-refresh.md
+  echo keep >"$BASE/outside"; ln -s "$BASE/outside" "$out"
+  refresh_run; eq "$(cat "$BASE/outside")" keep; [ -L "$out" ] && ok || bad "output link replaced"
+  [ -e "$R/.scaffold/.hookstate/last-refresh" ] && bad "last-refresh advanced without publishing" || ok
+  eq "$(ls -A "$R/.scaffold/inbox" | wc -l | tr -d ' ')" 1
+  rm "$out"; mkdir "$out"; refresh_run
+  eq "$(ls -A "$out")" ""; [ -e "$R/.scaffold/.hookstate/last-refresh" ] && bad "published into a directory" || ok
+}
+t_refresh_failed_claude() {
+  needs_skill || return 0
+  T=refresh_failed_claude; refresh_setup; FAKE_CLAUDE_RC=1 refresh_run
+  eq "$(ls -A "$R/.scaffold/inbox")" ""
+  [ -e "$R/.scaffold/.hookstate/last-refresh" ] && bad "last-refresh advanced on claude failure" || ok
+}
 t_refresh_args() {
   needs_skill || return 0
   T=refresh_args; refresh_setup; refresh_run

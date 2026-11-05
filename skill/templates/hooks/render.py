@@ -57,6 +57,11 @@ def snapshot(state, digest, payload):
         pass  # a concurrent session pruned first
 
 
+def effective_mode(root):
+    # Same rule as lib.sh effective_mode: a tracked config is everyone mode. Git failure raises, so nothing is written.
+    return "shared" if git(root, "ls-files", "--", ".scaffold/config", strict=True).strip() else "local"
+
+
 def state_unsafe(sc):
     # Force-added symlinks survive .gitignore: never read or write through one under .scaffold/ (same list as lib.sh state_safe).
     for d in ("", ".hookstate", "work", "work/active", "work/queued", "work/completed", "inbox"):
@@ -274,6 +279,7 @@ def write_atomic(path, text):
 
 if __name__ == "__main__":
     try:
-        main(Path(sys.argv[1]).resolve(), sys.argv[2] if len(sys.argv) > 2 else "main", sys.argv[3] if len(sys.argv) > 3 else "local")
+        root = Path(sys.argv[1]).resolve()
+        main(root, sys.argv[2] if len(sys.argv) > 2 else "main", sys.argv[3] if len(sys.argv) > 3 else effective_mode(root))
     except Exception:  # hooks fail open; atomic writes leave no partial file
         pass

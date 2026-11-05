@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # Optional daily delta: shell gathers git/GitHub facts, headless Haiku adds Jira and writes inbox/<date>-refresh.md.
 # Haiku works on copies in a temp dir and never edits the repo; the next interactive session triages the inbox file.
+# Runs as the user-owned copy `install.sh --job haiku-refresh` writes, with its sibling lib.sh; never checkout code.
 set -euo pipefail
 # Append only: launchd's PATH is minimal, but a prepended dir could shadow the caller's claude.
 export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" SCAFFOLD_HEADLESS=1
-root=$(cd "${1:?usage: haiku-refresh.sh ROOT}" && pwd)
+here=$(cd "$(dirname "$0")" && pwd -P)
+root=$(cd "${1:?usage: haiku-refresh.sh ROOT}" && pwd -P)
+# A pull can write tracked paths under .scaffold/: act only for a registered, wholly untracked scaffold.
+tracked=$(git -C "$root" ls-files -- .scaffold 2>/dev/null) || exit 0
+[ -z "$tracked" ] || exit 0
+grep -qxF -- "$root" "${SCAFFOLD_HOME:-$HOME/.claude}/scaffold/repos" 2>/dev/null || exit 0
 cd "$root"
 # shellcheck source=../hooks/lib.sh
-. .scaffold/hooks/lib.sh
+. "$here/lib.sh"
 load_config "$root" || exit 0
 state_safe "$root" || exit 0
 # Only an MCP tool name may enter --allowedTools; option-like REMOTE/BASE_BRANCH must not reach git fetch.
@@ -21,7 +27,8 @@ mkdir -p "$state" .scaffold/inbox
 # A lock older than 2 h is a killed run: clear it (fixed path, rmdir only) so refresh cannot stall silently.
 find "$state/refresh.lock" -maxdepth 0 -type d -mmin +120 -exec rmdir {} \; 2>/dev/null || true
 mkdir "$state/refresh.lock" 2>/dev/null || exit 0
-trap 'rmdir "$state/refresh.lock"' EXIT
+tmp=""
+trap 'rmdir "$state/refresh.lock"; [ -z "$tmp" ] || rm -f "$tmp"' EXIT
 since=$(cat "$state/last-refresh" 2>/dev/null || date -v-3d '+%Y-%m-%d %H:%M' 2>/dev/null || date -d '3 days ago' '+%Y-%m-%d %H:%M')
 git fetch -q "$REMOTE" "$BASE_BRANCH" || true
 facts=$state/refresh-facts.md
@@ -42,9 +49,14 @@ prompt="You refresh a local project context layer. Read facts.md. $jira Print th
 work=$(mktemp -d "${TMPDIR:-/tmp}/scaffold-refresh.XXXXXX")
 cp "$facts" "$work/facts.md"
 [ ! -f .scaffold/STATUS.md ] || cp .scaffold/STATUS.md "$work/STATUS.md"
+rc=0
 (cd "$work" && "${SCAFFOLD_CLAUDE_BIN:-claude}" -p "$prompt" --model claude-haiku-5-5 --setting-sources user --permission-mode dontAsk \
   --tools "Read,ToolSearch" --allowedTools "Read(./**)" "$JIRA_TOOL" "ToolSearch" \
-  --max-turns 25 --max-budget-usd 1 >out.md) 2>>"$state/refresh.log" || true
-[ -s "$work/out.md" ] && cp "$work/out.md" "$out" && date '+%Y-%m-%d %H:%M' >"$state/last-refresh"
+  --max-turns 25 --max-budget-usd 1 >out.md) 2>>"$state/refresh.log" || rc=$?
+# Publish only a successful, non-empty report, and only onto a regular file or nothing: mv replaces the entry, never a link target.
+if [ "$rc" = 0 ] && [ -s "$work/out.md" ] && [ ! -L "$out" ] && { [ ! -e "$out" ] || [ -f "$out" ]; }; then
+  tmp=$(mktemp .scaffold/inbox/.refresh.XXXXXX) && cp "$work/out.md" "$tmp" && mv -f "$tmp" "$out" && tmp="" \
+    && date '+%Y-%m-%d %H:%M' >"$state/last-refresh"
+fi
 rm -f "$work/facts.md" "$work/STATUS.md" "$work/out.md"; rmdir "$work" 2>/dev/null || true
 exit 0

@@ -57,7 +57,7 @@ Everyone mode: tell the user to share the board with the org and give teammates 
 
 Extra pushes: `install.sh --mode local --repo "$ROOT" --extra-push 'url|collection|doc_id|/abs/file'`, one flag per push (a rerun with the same url replaces its line); url must start `https://claude.ai/`, collection and doc_id match `[A-Za-z0-9_-]+`. Never put destinations in `.scaffold/config`.
 
-Copy `templates/extras/haiku-refresh.sh` to `$ROOT/.scaffold/hooks/`; set `JIRA_PROJECT=<key>` in `$ROOT/.scaffold/config`. For each daily job, fill `templates/extras/scaffold-job.plist` into `~/Library/LaunchAgents/` (`{{LABEL}}` = `io.scaffold.<repo>.<job>`, `{{COMMAND}}` = `$ROOT/.scaffold/hooks/catchup.py` (job runs `catchup.py ROOT`) or `$ROOT/.scaffold/hooks/haiku-refresh.sh`, `{{ARG}}` = `$ROOT`, `{{HOUR}}` = 8, `{{LOG}}` = `$ROOT/.scaffold/.hookstate/<job>.log` (launchd resolves relative paths against `/`)), then `launchctl bootstrap gui/$(id -u) <plist>`.
+Daily jobs: for haiku-refresh set `JIRA_PROJECT=<key>` in `$ROOT/.scaffold/config` first; then per job `install.sh --job catchup|haiku-refresh --repo "$ROOT"`. It copies the job script and its helper into `~/.claude/scaffold/jobs/<job>/` and writes `~/Library/LaunchAgents/io.scaffold.<repo>.<job>.plist` (weekdays 08:00, runs that user-owned copy on `$ROOT`, log beside the copy), so a pull can never swap the code launchd runs. Each run does nothing unless `$ROOT` is in `~/.claude/scaffold/repos` and nothing under `.scaffold/` is tracked. Exit 2 (everyone scaffold, unregistered repo, symlinked destination) means nothing was written. Show the user the `launchctl bootstrap` line it prints and run it with their OK. Never point a plist at `$ROOT/.scaffold/hooks/`.
 
 ## Step 8 — Verify and report
 
