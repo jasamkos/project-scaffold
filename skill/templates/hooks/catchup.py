@@ -20,6 +20,8 @@ KEEP = 50
 def main(root):
     sc = root / ".scaffold"
     state = sc / ".hookstate"
+    if render.state_unsafe(sc):
+        return
     state.mkdir(exist_ok=True)
     today = utc_today()
     since = parse_day(read_text(state / "catchup-since").strip()) or today - datetime.timedelta(days=14)
@@ -48,21 +50,37 @@ def parse_day(text):
 
 
 def fetch(root, first, today):
-    # One UTC day per query: search order is not by merge date, so a full page can't be resumed by date.
-    # Cursor = first day whose page was full (or failed), else today; that day is retried next run.
+    # One UTC day per query: search order is not by merge date, so a full page can't be resumed by date. A full day is
+    # re-read as 24 hour windows. Cursor = first day with a full hour (or a failure), else today; that day is retried next run.
     seen, cursor, day = {}, None, first
     while day <= today:
-        got = render.gh_json(root, ["pr", "list", "--state", "merged", "--search", f"merged:{day.isoformat()}", "--limit", str(LIMIT),
-                                    "--json", "number,title,headRefName,mergedAt,author"])
-        if not isinstance(got, list):
+        got = page(root, f"merged:{day.isoformat()}")
+        if got is None:
             if not seen and cursor is None and day == first:
                 return None, first
             return list(seen.values()), cursor or day
-        if len(got) >= LIMIT and cursor is None:
-            cursor = day
-        seen.update((p["number"], p) for p in got if isinstance(p, dict) and "number" in p and "headRefName" in p and str(p.get("mergedAt", ""))[:10])
+        add(seen, got)
+        if len(got) >= LIMIT:
+            for h in range(24):
+                w = f"{day.isoformat()}T{h:02d}"
+                hour = page(root, f"merged:{w}:00:00Z..{w}:59:59Z")
+                if hour is None:
+                    return list(seen.values()), cursor or day
+                add(seen, hour)
+                if len(hour) >= LIMIT and cursor is None:
+                    cursor = day
         day += datetime.timedelta(days=1)
     return list(seen.values()), cursor or today
+
+
+def page(root, query):
+    got = render.gh_json(root, ["pr", "list", "--state", "merged", "--search", query, "--limit", str(LIMIT),
+                                "--json", "number,title,headRefName,mergedAt,author"])
+    return got if isinstance(got, list) else None
+
+
+def add(seen, prs):
+    seen.update((p["number"], p) for p in prs if isinstance(p, dict) and "number" in p and "headRefName" in p and str(p.get("mergedAt", ""))[:10])
 
 
 def entry(p):

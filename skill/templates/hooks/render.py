@@ -16,6 +16,7 @@ BEGIN, END = "<!-- scaffold:generated -->", "<!-- /scaffold:generated -->"
 CACHE_SECONDS = 600
 MAX_BRANCH_LOOKUPS = 10
 PR_FIELDS = "number,headRefName,mergedAt"
+WORK_DIRS = ("active", "queued", "completed")
 
 
 def main(root, base, mode):
@@ -23,9 +24,12 @@ def main(root, base, mode):
         return  # fail closed: an unknown mode must not read drafts
     sc = root / ".scaffold"
     state = sc / ".hookstate"
+    if state_unsafe(sc):
+        return
     state.mkdir(parents=True, exist_ok=True)
-    notes = working_notes(root) if mode == "local" else committed_notes(root)
-    now, last = split(notes, merged_history(root, state, notes, base), base)
+    notes = working_notes(root) if mode == "local" else committed_notes(root)  # raises on git failure: nothing replaced
+    history, open_branches = merged_history(root, state, notes, base)
+    now, last = split(notes, history, open_branches, base)
     board = {"base": base_info(root), "now": now, "last_round": last, "unclaimed": load_json(state / "unclaimed.json", [])}
     digest = hashlib.sha256(json.dumps(board, sort_keys=True).encode()).hexdigest()
     stamped = dict(board, generated_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
@@ -53,10 +57,20 @@ def snapshot(state, digest, payload):
         pass  # a concurrent session pruned first
 
 
+def state_unsafe(sc):
+    # Force-added symlinks survive .gitignore: never read or write through one under .scaffold/ (same list as lib.sh state_safe).
+    for d in ("", ".hookstate", "work", "work/active", "work/queued", "work/completed", "inbox"):
+        p = sc / d
+        if p.is_symlink() or (p.exists() and not p.is_dir()):
+            return True
+    hs = sc / ".hookstate"
+    return (sc / "STATUS.md").is_symlink() or (hs.is_dir() and any(p.is_symlink() for p in hs.iterdir()))
+
+
 def working_notes(root):
     sc = root / ".scaffold"
     notes = []
-    for d in ("active", "queued"):
+    for d in WORK_DIRS:
         for p in sorted((sc / "work" / d).glob("*.md")):
             try:
                 notes.append(read_note(p.read_text(encoding="utf-8", errors="replace"), str(p.relative_to(root))))
@@ -67,8 +81,8 @@ def working_notes(root):
 
 def committed_notes(root):
     # Everyone mode: only what HEAD carries reaches STATUS and the shared board; drafts stay local.
-    listing = git(root, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", ".scaffold/work/active", ".scaffold/work/queued")
-    return [read_note(git(root, "show", f"HEAD:{rel}"), rel) for rel in sorted(listing.split("\0")) if rel.endswith(".md")]
+    listing = git(root, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", *(".scaffold/work/" + d for d in WORK_DIRS), strict=True)
+    return [read_note(git(root, "show", f"HEAD:{rel}", strict=True), rel) for rel in sorted(listing.split("\0")) if rel.endswith(".md")]
 
 
 def read_note(text, rel):
@@ -88,42 +102,48 @@ def tokens(s):
     return [t for t in re.split(r"[ \t\r,;()`]+", s) if t]
 
 
-def split(notes, history, base):
-    # The first listed branch decides whether a note is done (stacked PRs list the top branch first).
+def split(notes, history, open_branches, base):
+    # The first listed branch decides whether a note is done (stacked PRs list the top branch first); an open PR on it
+    # means the branch name was reused for new work. Completed notes only feed Last round.
     now, last = [], []
     for note in notes:
         first = note["branches"][0] if note["branches"] else ""
-        pr = history.get(first) if first and first != base else None
+        pr = history.get(first) if first and first != base and first not in open_branches else None
         if pr:
             last.append(dict(note, pr=pr["number"], merged_at=str(pr.get("mergedAt", ""))[:10]))
-        else:
+        elif not note["path"].startswith(".scaffold/work/completed/"):
             now.append(note)
     last.sort(key=lambda n: n["merged_at"], reverse=True)
     return now, last
 
 
 def merged_history(root, state, notes, base):
-    # merged.json = {"base": HEAD sha, "history": {...}}; history only grows, so an old merge that drops out of the recent list stays done.
+    # merged.json = {"base": HEAD sha, "history": {...}, "open": [branch, ...]}; history only grows, so an old merge that
+    # drops out of the recent list stays done. Returns (history, open-PR branches); a failed open-PR call keeps the cached set.
     cache = state / "merged.json"
     head = git(root, "rev-parse", "HEAD").strip()
     data = load_json(cache, {})
     data = data if isinstance(data, dict) else {}
     history = {k: v for k, v in (data.get("history") or {}).items() if isinstance(v, dict) and "number" in v} if isinstance(data.get("history"), dict) else {}
+    open_branches = {b for b in data.get("open") or [] if isinstance(b, str)} if isinstance(data.get("open"), list) else set()
     if head and data.get("base") == head and cache_age(cache) < CACHE_SECONDS:
-        return history
+        return history, open_branches
     deadline = time.monotonic() + gh_timeout()
     recent = gh_json(root, ["pr", "list", "--state", "merged", "--limit", "200", "--json", PR_FIELDS], deadline)
     if not isinstance(recent, list):
-        return history
+        return history, open_branches
     record(history, recent)
+    found = gh_json(root, ["pr", "list", "--state", "open", "--limit", "200", "--json", "headRefName,number"], deadline)
+    if isinstance(found, list):
+        open_branches = {p["headRefName"] for p in found if isinstance(p, dict) and isinstance(p.get("headRefName"), str)}
     unresolved = []
     for n in notes:
         first = n["branches"][0] if n["branches"] else ""
         if first and first != base and first not in history and first not in unresolved:
             unresolved.append(first)
     lookup_branches(root, state / "lookups.json", history, unresolved, deadline)
-    write_atomic(cache, json.dumps({"base": head, "history": history}))
-    return history
+    write_atomic(cache, json.dumps({"base": head, "history": history, "open": sorted(open_branches)}))
+    return history, open_branches
 
 
 def lookup_branches(root, path, history, unresolved, deadline):
@@ -141,9 +161,12 @@ def lookup_branches(root, path, history, unresolved, deadline):
 
 
 def record(history, prs):
+    # Latest merge per branch: a reused branch name reports its newest PR.
     for pr in prs:
         if isinstance(pr, dict) and "number" in pr and "headRefName" in pr:
-            history.setdefault(pr["headRefName"], {"number": pr["number"], "mergedAt": pr.get("mergedAt", "")})
+            cur = history.get(pr["headRefName"])
+            if cur is None or str(pr.get("mergedAt", "")) > str(cur.get("mergedAt", "")):
+                history[pr["headRefName"]] = {"number": pr["number"], "mergedAt": pr.get("mergedAt", "")}
 
 
 def gh_timeout():
@@ -167,12 +190,17 @@ def gh_json(root, args, deadline=None):
         return None
 
 
-def git(root, *args):
+def git(root, *args, strict=False):
+    # strict: any failure raises, so a partial committed-tree read never replaces STATUS or the board.
     try:
-        out = subprocess.run(["git", "-C", str(root)] + list(args), capture_output=True, timeout=5).stdout
-        return out.decode("utf-8", errors="replace")
+        res = subprocess.run(["git", "-C", str(root)] + list(args), capture_output=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
+        if strict:
+            raise
         return ""
+    if strict and res.returncode != 0:
+        raise RuntimeError("git %s failed" % args[0])
+    return res.stdout.decode("utf-8", errors="replace")
 
 
 def base_info(root):

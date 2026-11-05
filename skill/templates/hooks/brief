@@ -12,7 +12,8 @@ main() {
   . "$here/lib.sh" 2>/dev/null || return 0
   dir=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null); dir=${dir:-$PWD}
   root=$(scaffold_root "$dir") || return 0
-  load_config "$root" || return 0
+  load_config "$root" || { echo "scaffold: cannot verify tracking state; skipped"; return 0; }
+  state_safe "$root" || { echo "scaffold: .scaffold/ holds a symlink; skipped"; return 0; }
   load_pushes "$root"
   mkdir -p "$STATE" || return 0
   sid=$(jq -r '.session_id // "unknown"' <<<"$input" 2>/dev/null | tr -cd '[:alnum:]_-')

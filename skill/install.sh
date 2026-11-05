@@ -160,7 +160,13 @@ set_key() {  # file key value: replace or append KEY=value
   mv "$tmp" "$1"
 }
 
-append_once() { touch "$1"; grep -qxF -- "$2" "$1" || echo "$2" >>"$1"; }
+# A file without a final newline gets one first, so the pattern never joins its last line.
+append_once() {
+  touch "$1"
+  grep -qxF -- "$2" "$1" && return 0
+  [ ! -s "$1" ] || [ -z "$(tail -c 1 "$1")" ] || echo >>"$1"
+  echo "$2" >>"$1"
+}
 
 # Drop exactly the commands this installer writes from every registration (siblings, matcher and registrations
 # that were already empty stay; the unquoted form earlier versions wrote counts as ours), then add ours once per event.

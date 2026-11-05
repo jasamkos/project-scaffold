@@ -10,6 +10,7 @@ dir=$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null) || exit 0
 dir=${dir:-$PWD}
 root=$(scaffold_root "$dir") || exit 0
 load_config "$root" || exit 0
+state_safe "$root" || exit 0
 sid=$(jq -r '.session_id // "unknown"' <<<"$input" 2>/dev/null | tr -cd '[:alnum:]_-')
 sid=${sid:-unknown}
 marker=$STATE/$sid.start

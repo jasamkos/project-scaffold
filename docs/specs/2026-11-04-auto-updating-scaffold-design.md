@@ -120,6 +120,13 @@ Branch review (2026-11-05, 14 findings), changes to the design:
 - `haiku-refresh` runs Haiku with user settings only, in a fresh temp dir holding copies of the facts and STATUS, with `Edit(./out.md)` as its only write grant and the repo denied by absolute rule; the shell copies `out.md` into the inbox.
 - Push/PR detection matches command positions only (quoted text counts only as a `bash|sh|zsh -c` / `eval` script) and accepts git global options and `gh -R`.
 
+Branch review 2 (2026-11-05, 11 findings), changes to the design:
+
+- Unknown tracking state fails closed: if `git ls-files` fails (e.g. corrupt index), `dispatch` runs no hook and `effective_mode` returns 2; `brief` then renders and publishes nothing (one warning line), `gate` and `checkpoint` decide nothing.
+- `haiku-refresh` gives Haiku no write tool (`--tools Read,ToolSearch`): an inherited path-scoped Edit grant reaches files outside any deny list. Haiku prints the report to stdout; the shell captures it into the temp dir's `out.md` and copies it to the inbox only if non-empty.
+- Hooks (and `render.py`/`catchup.py` run directly) refuse to read or write through a symlink under `.scaffold/`: `.scaffold`, `.hookstate`, `work/` and its stage dirs, `inbox` must be real directories, and `STATUS.md` and `.hookstate` entries must not be links; otherwise they exit 0 writing nothing (`brief` prints one warning line).
+- Merge history keeps the latest merged PR per branch, and a note whose first branch has an open PR (one `gh pr list --state open` call per rebuild, cached with the history) stays in Now: a reused branch name no longer marks new work done. `work/completed/` notes feed Last round only.
+
 ## Out of scope
 
 CI enforcement (D3); Jira in `catchup` (needs MCP or API token; stays in the `haiku-refresh` extra); multi-repo scaffolds; Jira tickets on the status board (needs the Jira pull; ai_gateway's Launch Board keeps its own Jira-driven build); boards aggregating several repos.

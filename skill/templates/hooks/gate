@@ -14,6 +14,7 @@ dir=$(jq -r '.cwd // empty' <<<"$input"); dir=$(target_dir "$cmd" "${dir:-$PWD}"
 root=$(scaffold_root "$dir") || exit 0
 top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || exit 0  # ls-tree/show/diff pathspecs are cwd-relative
 load_config "$root" || exit 0
+state_safe "$root" || exit 0
 branch=$(git -C "$dir" branch --show-current 2>/dev/null) || exit 0
 if [ -z "$branch" ] || [ "$branch" = "$BASE_BRANCH" ]; then exit 0; fi
 b=$(safe_text <<<"$branch")

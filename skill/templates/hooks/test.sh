@@ -34,6 +34,7 @@ echo "\$*" >>"$BASE/gh.calls"
 n=\$(cat "$BASE/gh.n" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" >"$BASE/gh.n"
 if [ -n "\${GH_SLEEP:-}" ] && { [ -z "\${GH_SLEEP_FROM:-}" ] || [ "\$n" -ge "\$GH_SLEEP_FROM" ]; }; then exec sleep "\$GH_SLEEP"; fi
 if [ -n "\${GH_SLEEP_FROM:-}" ] && [ -z "\${GH_SLEEP:-}" ] && [ "\$n" -ge "\$GH_SLEEP_FROM" ]; then exec sleep 30; fi
+case "\$*" in *"--state open"*) cat "$GHOUT.open" 2>/dev/null || echo '[]'; exit 0 ;; esac
 if [ -f "$GHOUT.\$n" ]; then cat "$GHOUT.\$n"; else cat "$GHOUT" 2>/dev/null || exit 1; fi
 EOF
   chmod +x "$FAKEBIN/gh"
@@ -176,15 +177,24 @@ t_lib_target_dir() {
   eq "$(target_dir "git  -C  $X/y  push" /c)" "$X/y"
   eq "$(target_dir "git -C $X/y --no-pager -c a=b push" /c)" "$X/y"
   eq "$(target_dir "git -P --git-dir=$X/y/.git -C $X/y push" /c)" "$X/y"
+  eq "$(target_dir "printf 'git -C $X/y push'; git push" /c)" "/c"
+  eq "$(target_dir "echo \"git -C $X/y push\" && git push" /c)" "/c"
+  eq "$(target_dir "git --work-tree=$X/y --git-dir=$X/y/.git push" /c)" "$X/y"
+  eq "$(target_dir "git --git-dir=$X/y/.git push" /c)" "$X/y"
+  eq "$(target_dir "git --work-tree=\"$X/y z\" push" /c)" "$X/y z"
+  eq "$(target_dir "git -C $X -C y push" /c)" "$X/y"
+  eq "$(target_dir "git push; cd $X/y && ls" /c)" "/c"
 }
 t_gate_command_forms() {
   T=gate_command_forms; mkrepo local; git -C "$R" switch -qc feat/a
   for c in 'git  push' $'git \t push' 'git --no-pager push' 'git -P push' 'git --paginate -c a=b push' 'git --git-dir=.git --work-tree=. push' \
     'git --bare push' 'git --exec-path=/x push' 'gh -R owner/repo pr create' 'gh --repo owner/repo pr  create --fill' \
-    'eval "git push"' 'bash -lc "make && git push"' "zsh -c 'gh pr create'" 'FOO=1 git push' 'make || git push' 'echo $(git push)'; do
+    'eval "git push"' 'bash -lc "make && git push"' "zsh -c 'gh pr create'" 'FOO=1 git push' 'make || git push' 'echo $(git push)' \
+    'url="$(gh pr create --fill)"' 'echo "$(git push)"' 'echo "x `git push` y"' 'echo "$HOME $(git -C . push origin x)"'; do
     T="gate_command_forms [$c]"; deny_has "$(gate "$c")" "no work note lists branch feat/a"
   done
-  for c in 'echo "git push"' "grep 'git push' docs" 'git commit -m "then; git push"' "echo 'gh pr create'" 'rg -n "git --no-pager push" .' 'echo "a" git push'; do
+  for c in 'echo "git push"' "grep 'git push' docs" 'git commit -m "then; git push"' "echo 'gh pr create'" 'rg -n "git --no-pager push" .' 'echo "a" git push' \
+    "echo '\$(git push)'" 'git commit -m "fix $(date) then git push"'; do
     T="gate_command_forms [$c]"; eq "$(gate "$c")" ""
   done
 }
@@ -222,6 +232,48 @@ t_gate_targets_command_repo() {
   deny_has "$(gate "git -C '$BASE/wt' push")" "no work note lists branch feat/w"
   deny_has "$(gate "cd \"$BASE/wt\" && git push")" "no work note lists branch feat/w"
   deny_has "$(gate "cd '$BASE/wt' && git push")" "no work note lists branch feat/w"
+}
+# The target comes from the invocation that executes, not from a quoted example elsewhere in the command.
+t_gate_targets_executable_invocation() {
+  T=gate_targets_executable_invocation; mkrepo local
+  git -C "$R" worktree add -q "$BASE/wt" -b feat/w
+  j=$(hookjson "printf 'git -C $R push'; git push" | jq -c --arg d "$BASE/wt" '.cwd = $d')
+  deny_has "$(PATH="$FAKEBIN:$PATH" "$R/.scaffold/hooks/gate" <<<"$j")" "no work note lists branch feat/w"
+  deny_has "$(gate "git --work-tree=$BASE/wt --git-dir=$BASE/wt/.git push")" "no work note lists branch feat/w"
+}
+# Ruling: git failing to read the index (corrupt) must not pick a mode; hooks then publish or decide nothing.
+corrupt_index() { printf 'garbage' >"$R/.git/index"; }
+t_mode_git_failure_fails_closed() {
+  T=mode_git_failure_fails_closed; mkrepo shared; echo '[]' >"$GHOUT"
+  pushes "$R|board|https://claude.ai/artifact/X"
+  git -C "$R" switch -qc feat/x; note draft feat/d
+  touch -t 202001010000 "$R/.scaffold/work/active/draft.md"; touch "$R/.scaffold/.hookstate/s1.start"; commit_line
+  corrupt_index
+  . "$R/.scaffold/hooks/lib.sh"; out=$(effective_mode "$R"); eq "$?:$out" "2:"
+  eq "$(brief)" "scaffold: cannot verify tracking state; skipped"
+  [ -e "$R/.scaffold/.hookstate/board.json" ] && bad "board rendered with unknown mode" || ok
+  eq "$(gate 'git push')" ""
+  eq "$(ckpt)" ""
+}
+# Ruling: hooks never delete or write through a symlink under .scaffold/ (tracked symlinks survive .gitignore).
+t_runtime_symlinked_state() {
+  T=runtime_symlinked_state; mkrepo shared; echo '[]' >"$GHOUT"; O=$BASE/outside
+  mkdir "$O"; echo keep >"$O/board.json"; rmdir "$R/.scaffold/.hookstate"; ln -s "$O" "$R/.scaffold/.hookstate"
+  git -C "$R" add -f .scaffold/.hookstate; git -C "$R" commit -qm link
+  git -C "$R" switch -qc feat/a; note a feat/a; commit_note a; commit_line
+  eq "$(brief)" "scaffold: .scaffold/ holds a symlink; skipped"
+  MODE=shared render; catchup; ckpt >/dev/null; gate 'git push' >/dev/null
+  eq "$(cat "$O/board.json")" keep; eq "$(ls -A "$O")" board.json
+  mkrepo local; echo '[]' >"$GHOUT"; O=$BASE/outside; mkdir "$O"; echo keep >"$O/board.json"
+  rmdir "$R/.scaffold/.hookstate"; ln -s "$O" "$R/.scaffold/.hookstate"
+  git -C "$R" switch -qc feat/a; note a feat/a
+  eq "$(gate 'git push')" ""; brief >/dev/null; render; catchup
+  eq "$(ls -A "$O")" board.json
+  mkrepo local; echo '[]' >"$GHOUT"; echo keep >"$BASE/err.txt"; ln -s "$BASE/err.txt" "$R/.scaffold/.hookstate/render.err"
+  has "$(brief)" "holds a symlink"; eq "$(cat "$BASE/err.txt")" keep
+  echo keep >"$BASE/status.txt"; rm "$R/.scaffold/.hookstate/render.err"; ln -s "$BASE/status.txt" "$R/.scaffold/STATUS.md"
+  render; [ -L "$R/.scaffold/STATUS.md" ] && ok || bad "STATUS symlink replaced"
+  [ -e "$R/.scaffold/.hookstate/board.json" ] && bad "render wrote beside symlinked STATUS" || ok
 }
 t_gate_base_and_skip() {
   T=gate_base_and_skip; mkrepo local
@@ -521,6 +573,45 @@ t_render_invalid_utf8_note() {
   git -C "$R" add -f .scaffold/work/active/bad.md; git -C "$R" commit -qm bad
   MODE=shared render || bad "shared render failed on invalid UTF-8"; eq "$(board '.now[0].task')" bad
 }
+fail_git() {  # $1 subcommand the fake git fails with 128
+  printf '#!/bin/sh\ncase "$*" in *" %s "*) exit 128 ;; esac\nexec /usr/bin/git "$@"\n' "$1" >"$FAKEBIN/git"; chmod +x "$FAKEBIN/git"
+}
+t_render_git_failure_keeps_outputs() {
+  T=render_git_failure_keeps_outputs; mkrepo shared; echo '[]' >"$GHOUT"; S=$R/.scaffold/.hookstate
+  note a feat/a; commit_note a; MODE=shared render; cp "$R/.scaffold/STATUS.md" "$BASE/status.before"; cp "$S/board.json" "$BASE/board.before"
+  for sub in ls-tree show; do
+    fail_git "$sub"; MODE=shared render; eq "$?" 0
+    cmp -s "$R/.scaffold/STATUS.md" "$BASE/status.before" && ok || bad "$sub failure replaced STATUS"
+    cmp -s "$S/board.json" "$BASE/board.before" && ok || bad "$sub failure replaced board.json"
+  done
+  pushes "$R|board|https://claude.ai/artifact/X"; out=$(brief)
+  has "$out" "STATUS rebuild failed"; lacks "$out" "push scaffold board data"
+}
+completed() { printf 'status: done\nbranch: %s\nwaiting-on: none\nnext: none\n' "$2" >"$R/.scaffold/work/completed/$1.md"; }
+t_render_completed_notes_history() {
+  T=render_completed_notes_history; mkrepo local; note a feat/a; completed c1 feat/c1; completed c2 feat/c2
+  echo '[{"number":4,"title":"t","headRefName":"feat/c1","mergedAt":"2026-11-03T10:00:00Z"}]' >"$GHOUT"
+  render
+  eq "$(board '[.now[].task] | join(",")')" "a"; eq "$(board '[.last_round[].task] | join(",")')" "c1"
+  has "$(cat "$R/.scaffold/STATUS.md")" "**c1** — #4"
+  mkrepo shared; completed c1 feat/c1; completed c2 feat/c2
+  git -C "$R" add -f .scaffold/work/completed; git -C "$R" commit -qm completed
+  echo '[{"number":4,"title":"t","headRefName":"feat/c1","mergedAt":"2026-11-03T10:00:00Z"}]' >"$GHOUT"
+  MODE=shared render
+  eq "$(board '.now | length')" "0"; eq "$(board '[.last_round[].task] | join(",")')" "c1"
+}
+t_render_latest_pr_and_open_branch() {
+  T=render_latest_pr_and_open_branch; mkrepo local; note a feat/a; note b feat/b
+  echo '[{"number":3,"headRefName":"feat/a","mergedAt":"2026-11-01T10:00:00Z"},{"number":8,"headRefName":"feat/a","mergedAt":"2026-11-03T10:00:00Z"},{"number":5,"headRefName":"feat/b","mergedAt":"2026-11-02T10:00:00Z"}]' >"$GHOUT"
+  echo '[{"headRefName":"feat/b","number":9}]' >"$GHOUT.open"
+  render
+  eq "$(board '[.last_round[] | "\(.task)#\(.pr)"] | join(",")')" "a#8"
+  eq "$(board '[.now[].task] | join(",")')" "b"
+  eq "$(grep -c -e '--state open' "$BASE/gh.calls")" 1
+  render; eq "$(board '[.now[].task] | join(",")')" "b"  # fresh cache keeps the open set
+  echo '[{"number":10,"headRefName":"feat/a","mergedAt":"2026-11-04T10:00:00Z"}]' >"$GHOUT"; echo '[]' >"$GHOUT.open"; expire_cache
+  render; eq "$(board '[.last_round[] | "\(.task)#\(.pr)"] | join(",")')" "a#10,b#5"
+}
 t_render_parses_like_bash() {
   T=render_parses_like_bash; mkrepo local; echo '[]' >"$GHOUT"
   printf 'status: a\fb\nbranch: feat/a\xc2\xa0x, feat/b;feat/c\vd\n' >"$R/.scaffold/work/active/p.md"
@@ -548,11 +639,20 @@ t_catchup_full_day_is_retried() {
   echo '[{"number":3,"title":"a","headRefName":"x/a","mergedAt":"2026-11-01T10:00:00Z","author":{"login":"a"}}]' >"$GHOUT.1"
   echo '[{"number":9,"title":"z","headRefName":"x/z","mergedAt":"2026-11-02T10:00:00Z","author":{"login":"z"}},{"number":4,"title":"b","headRefName":"x/b","mergedAt":"2026-11-02T20:00:00Z","author":{"login":"b"}}]' >"$GHOUT.2"
   echo '[]' >"$GHOUT"
+  # The full day is split into 24 hour windows (calls 3..26); hour 15 reveals #5, which the day page omitted.
+  echo '[{"number":5,"title":"o","headRefName":"x/o","mergedAt":"2026-11-02T15:30:00Z","author":{"login":"o"}}]' >"$GHOUT.18"
+  SCAFFOLD_CATCHUP_LIMIT=2 catchup
+  eq "$(cat "$R/.scaffold/.hookstate/catchup-since")" "2026-11-04"
+  eq "$(jq -r '[.[].number] | sort | join(",")' "$R/.scaffold/.hookstate/unclaimed.json")" "3,4,5,9"
+  eq "$(wc -l <"$BASE/gh.calls" | tr -d ' ')" "28"
+  has "$(sed -n 2p "$BASE/gh.calls")" "merged:2026-11-02 "
+  has "$(sed -n 3p "$BASE/gh.calls")" "merged:2026-11-02T00:00:00Z..2026-11-02T00:59:59Z "
+  has "$(sed -n 26p "$BASE/gh.calls")" "merged:2026-11-02T23:00:00Z..2026-11-02T23:59:59Z "
+  # A full hour window leaves the run incomplete: the cursor stays on that day.
+  echo 2026-11-01 >"$R/.scaffold/.hookstate/catchup-since"; rm -f "$BASE/gh.n"
+  cp "$GHOUT.2" "$GHOUT.13"
   SCAFFOLD_CATCHUP_LIMIT=2 catchup
   eq "$(cat "$R/.scaffold/.hookstate/catchup-since")" "2026-11-02"
-  eq "$(jq -r '[.[].number] | join(",")' "$R/.scaffold/.hookstate/unclaimed.json")" "9,4,3"
-  eq "$(wc -l <"$BASE/gh.calls" | tr -d ' ')" "4"
-  has "$(sed -n 2p "$BASE/gh.calls")" "merged:2026-11-02 "
 }
 t_catchup_window_is_per_utc_day() {
   T=catchup_window_is_per_utc_day; mkrepo local; echo '[]' >"$GHOUT"
@@ -933,18 +1033,53 @@ t_dispatch_refuses_tracked_or_nonexec_hooks() {
   eq "$("$SKILL/dispatch" brief <<<"$j")" ""
   unset SCAFFOLD_HOME
 }
+t_dispatch_fails_closed_on_git_failure() {
+  needs_skill || return 0
+  T=dispatch_fails_closed_on_git_failure; mkrepo local
+  export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME/scaffold"; cp "$HOOKS/lib.sh" "$SCAFFOLD_HOME/scaffold/"; echo "$R" >"$SCAFFOLD_HOME/scaffold/repos"
+  printf '#!/bin/sh\necho RAN\n' >"$R/.scaffold/hooks/brief"; chmod +x "$R/.scaffold/hooks/brief"; git -C "$R" add -f .scaffold/hooks/brief
+  printf 'garbage' >"$R/.git/index"
+  eq "$("$SKILL/dispatch" brief <<<"$(jq -nc --arg d "$R" '{session_id:"s",cwd:$d}')")" ""
+  unset SCAFFOLD_HOME
+}
+t_dispatch_gate_executable_forms() {
+  needs_skill || return 0
+  T=dispatch_gate_executable_forms; mkrepo local
+  git -C "$R" worktree add -q "$BASE/wt" -b feat/w
+  export SCAFFOLD_HOME=$BASE/home; mkdir -p "$SCAFFOLD_HOME/scaffold"; cp "$HOOKS/lib.sh" "$SCAFFOLD_HOME/scaffold/"; echo "$R" >"$SCAFFOLD_HOME/scaffold/repos"
+  for c in 'url="$(gh pr create --fill)"' 'echo "$(git push)"' "printf 'git -C $R push'; git push"; do
+    j=$(jq -nc --arg d "$BASE/wt" --arg c "$c" '{session_id:"s",cwd:$d,tool_name:"Bash",tool_input:{command:$c}}')
+    T="dispatch_gate_executable_forms [$c]"; deny_has "$(PATH="$FAKEBIN:$PATH" "$SKILL/dispatch" gate <<<"$j")" "no work note lists branch feat/w"
+  done
+  j=$(jq -nc --arg d "$R" --arg c "git --work-tree=$BASE/wt --git-dir=$BASE/wt/.git push" '{session_id:"s",cwd:$d,tool_name:"Bash",tool_input:{command:$c}}')
+  T=dispatch_gate_executable_forms; deny_has "$(PATH="$FAKEBIN:$PATH" "$SKILL/dispatch" gate <<<"$j")" "no work note lists branch feat/w"
+  unset SCAFFOLD_HOME
+}
+t_install_appends_on_own_line() {
+  needs_skill || return 0
+  T=install_appends_on_own_line; mkrepo none; export SCAFFOLD_HOME=$BASE/home
+  ex=$(git -C "$R" rev-parse --path-format=absolute --git-common-dir)/info/exclude; printf 'keep-this-pattern' >"$ex"
+  "$SKILL/install.sh" --mode local --repo "$R" >/dev/null
+  eq "$(grep -cx 'keep-this-pattern' "$ex"):$(grep -cx '/.scaffold/' "$ex")" "1:1"
+  eq "$(git -C "$R" status --short)" ""
+  mkrepo none; export SCAFFOLD_HOME=$BASE/home; printf 'node_modules' >"$R/.gitignore"
+  "$SKILL/install.sh" --mode shared --repo "$R" >/dev/null
+  eq "$(grep -cx 'node_modules' "$R/.gitignore"):$(grep -cx '.scaffold/STATUS.md' "$R/.gitignore")" "1:1"
+  unset SCAFFOLD_HOME
+}
 # Refresh: SCAFFOLD_CLAUDE_BIN selects the fake; a decoy `claude` earlier on PATH fails the test if the override is ignored.
 refresh_run() {
   mkdir -p "$BASE/decoy"; cp "$FAKEBIN/gh" "$BASE/decoy/gh"
   printf '#!/bin/sh\necho decoy >>"%s/decoy.called"\n' "$BASE" >"$BASE/decoy/claude"; chmod +x "$BASE/decoy/claude"
-  # Fake claude records argv, PATH, cwd and its listing, then writes out.md in its cwd unless FAKE_CLAUDE_SILENT.
+  # Fake claude records argv, PATH, cwd and its listing, then prints the report to stdout unless FAKE_CLAUDE_SILENT.
   cat >"$FAKEBIN/claude" <<EOF
 #!/bin/sh
 echo call >>"$BASE/claude.calls"
 printf '%s\n' "\$@" >"$BASE/claude.args"
 echo "\$PATH" >"$BASE/claude.path"
 pwd -P >"$BASE/claude.cwd"; LC_ALL=C ls -A >"$BASE/claude.ls"
-[ -n "\${FAKE_CLAUDE_SILENT:-}" ] || echo "refresh from out.md" >out.md
+echo "stderr noise" >&2
+[ -n "\${FAKE_CLAUDE_SILENT:-}" ] || echo "refresh from stdout"
 EOF
   chmod +x "$FAKEBIN/claude"
   printf '#!/bin/sh\necho "$*" >>"%s/git.args"\nexec /usr/bin/git "$@"\n' "$BASE" >"$BASE/decoy/git"; chmod +x "$BASE/decoy/git"
@@ -958,15 +1093,16 @@ t_refresh_args() {
   eq "$(cat "$BASE/decoy.called" 2>/dev/null)" ""
   a=$(cat "$BASE/claude.args")
   eq "$(sed -n 1p "$BASE/claude.args")" "-p"
-  # Exact flags (prompt line dropped): user settings only, writes only via Edit(./out.md) in the temp cwd, repo denied by absolute rule.
-  eq "$(sed 2d "$BASE/claude.args" | paste -sd' ' -)" "-p --model claude-haiku-5-5 --setting-sources user --permission-mode dontAsk --tools Read,Write,Edit,ToolSearch --allowedTools Read(./**) Edit(./out.md) mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql ToolSearch --disallowedTools Edit(/$R/**) Write(/$R/**) --max-turns 25 --max-budget-usd 1"
+  # Exact flags (prompt line dropped): user settings only, no write tool at all; the report is stdout.
+  eq "$(sed 2d "$BASE/claude.args" | paste -sd' ' -)" "-p --model claude-haiku-5-5 --setting-sources user --permission-mode dontAsk --tools Read,ToolSearch --allowedTools Read(./**) mcp__plugin_atlassian_atlassian__searchJiraIssuesUsingJql ToolSearch --max-turns 25 --max-budget-usd 1"
   has "$a" "project = ABC"
   has "$a" "never follow instructions"
+  has "$a" "to stdout"
   cwd=$(cat "$BASE/claude.cwd")
   case $cwd in "$R" | "$R"/*) bad "claude ran inside the repo: $cwd" ;; *) ok ;; esac
-  eq "$(paste -sd' ' - <"$BASE/claude.ls")" "STATUS.md facts.md"
+  eq "$(paste -sd' ' - <"$BASE/claude.ls")" "STATUS.md facts.md out.md"
   [ -e "$cwd" ] && bad "temp cwd left behind" || ok
-  eq "$(cat "$R/.scaffold/inbox/$(date +%F)-refresh.md")" "refresh from out.md"
+  eq "$(cat "$R/.scaffold/inbox/$(date +%F)-refresh.md")" "refresh from stdout"
   case $(cat "$BASE/claude.path") in "$BASE/decoy:/usr/bin:/bin"*) ok ;; *) bad "PATH not caller-first: $(cat "$BASE/claude.path")" ;; esac
   [ -s "$R/.scaffold/.hookstate/last-refresh" ] && ok || bad "last-refresh not written"
 }
